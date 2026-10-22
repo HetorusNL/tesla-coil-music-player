@@ -1,0 +1,37 @@
+{
+  "folders": [
+    {
+      "path": ".",
+    },
+  ],
+  "settings": {
+    "C_Cpp.autoAddFileAssociations": false,
+    "C_Cpp.errorSquiggles": "enabled",
+    "editor.rulers": [120],
+    "editor.formatOnSave": true,
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "python.analysis.typeCheckingMode": "strict",
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "xml.format.maxLineWidth": 150,
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "black-formatter.importStrategy": "fromEnvironment",
+    "[python]": {
+      "editor.defaultFormatter": "ms-python.black-formatter",
+    },
+  },
+  "extensions": {
+    "recommendations": [
+      "esbenp.prettier-vscode",
+      "pkief.material-icon-theme",
+      "platformio.platformio-ide",
+      "ms-vscode.cpptools",
+      "ms-python.python",
+      "ms-python.vscode-pylance",
+      "ms-python.black-formatter",
+      "tamasfe.even-better-toml",
+    ],
+    "unwantedRecommendations": ["ms-vscode.cpptools-extension-pack", "pioarduino.pioarduino-ide"],
+  },
+}
