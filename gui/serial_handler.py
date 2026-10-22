@@ -43,6 +43,6 @@ class SerialHandler:
                 self.sequence_number = msg[2]
                 result = False
             elif msg[1] == 0xFF:
+                # debug print of the controller, logged by the caller
                 result = False
-                print(f"debug print: " f'"{bytearray(msg)[3:].decode("utf-8", "ignore")}" ' f"{list(msg)}")
         return result, list(msg)

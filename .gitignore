@@ -13,3 +13,10 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# NiceGUI
+.nicegui/
+
+# MIDI files (songs)
+*.[mM][iI][dD]
+*.[mM][iI][dD][iI]
