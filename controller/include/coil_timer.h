@@ -34,10 +34,11 @@ public:
 private:
     void isr();
     inline uint8_t get_on_time() {
-        // make sure that the type of the array is a single uint8_t, or change sizeof
+        constexpr uint16_t num_on_times = sizeof(on_times) / sizeof(on_times[0]);
         uint16_t index = (uint16_t)_frequency / 100;
-        if (index > sizeof(on_times))
-            return 0;
+        // interpolating needs the next entry as well, so use the last entry beyond the end of the table
+        if (index >= num_on_times - 1)
+            return on_times[num_on_times - 1];
         uint16_t base = on_times[index];
         uint16_t interval = on_times[index] - on_times[index + 1];
         return base - interval * (((uint16_t)_frequency % 100) + 1) / 100;
