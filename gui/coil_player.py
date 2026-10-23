@@ -6,6 +6,8 @@
 
 import threading
 from collections import deque
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -32,6 +34,11 @@ DEBUG = 0xFF
 # MIDI channel used for notes played live on the keyboard
 LIVE_CHANNEL = 0
 
+# time between the attempts to reconnect after the connection with the controller was lost
+RECONNECT_INTERVAL = 0.5
+# stable names of the USB serial devices, the device itself can get another name when it reconnects
+SERIAL_BY_ID = Path("/dev/serial/by-id")
+
 
 # the number of log lines kept, the debug messages add two lines per note
 MAX_LOG_LINES = 5000
@@ -48,10 +55,23 @@ def hex_bytes(data: list[int]) -> str:
     return " ".join(f"{byte:02x}" for byte in data)
 
 
+def stable_port_path(port_name: str) -> Path | None:
+    """Returns the /dev/serial/by-id path of the serial port, if it has one."""
+    try:
+        return next(path for path in SERIAL_BY_ID.iterdir() if path.resolve() == Path(port_name).resolve())
+    except OSError, StopIteration:
+        return None
+
+
+class ConnectionLost(Exception):
+    """The serial connection with the controller was lost, e.g. when the coil reset its USB connection."""
+
+
 class PlayerState(Enum):
     DISCONNECTED = "disconnected"
     IDLE = "idle"
     PLAYING = "playing"
+    RECONNECTING = "reconnecting"
 
 
 class CoilPlayer:
@@ -81,17 +101,29 @@ class CoilPlayer:
         self._serial_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # reconnecting after a lost connection, by the playback thread (to resume the song) or in the background
+        self._stable_port: Path | None = None
+        self._reconnecting = False
+        self._cancel_reconnect = threading.Event()
+        self._reconnect_thread: threading.Thread | None = None
         self._live_notes: set[int] = set()
         # what the controller is playing, for the meter
         self.coil_model = CoilModel()
 
     @property
     def state(self) -> PlayerState:
-        if self._sh is None:
-            return PlayerState.DISCONNECTED
+        # a song keeps playing while the playback thread reconnects to resume it
         if self._thread is not None and self._thread.is_alive():
             return PlayerState.PLAYING
+        if self._reconnecting:
+            return PlayerState.RECONNECTING
+        if self._sh is None:
+            return PlayerState.DISCONNECTED
         return PlayerState.IDLE
+
+    @property
+    def reconnecting(self) -> bool:
+        return self._reconnecting
 
     def log(self, line: str, debug: bool = False):
         with self._log_lock:
@@ -153,42 +185,42 @@ class CoilPlayer:
 
     def connect(self, port_name: str):
         self.disconnect()
-        # setup the serial connection with the tesla coil controller
-        sh = SerialHandler(port_name)
-        sh.open()
-        self._sh = sh
-        self.port_name = port_name
-        self.log(f"connected to {port_name}")
-        sleep(0.05)
-
-        # force a reset of the tesla coil controller, the first one syncs the sequence number
-        with self._serial_lock:
-            for _ in range(2):
-                self._reset()
+        self._cancel_reconnect.clear()
+        self._stable_port = stable_port_path(port_name)
+        self._open(port_name)
 
     def disconnect(self):
-        if self._sh is None:
-            return
+        # also cancels reconnecting, the playback thread checks it as well
+        self._cancel_reconnect.set()
         self.stop()
-        self.live_release_all()
-        with self._serial_lock:
-            self._reset()
-            self._sh.close()
-        self._sh = None
-        self.coil_model.clear()
+        if self._reconnect_thread is not None:
+            self._reconnect_thread.join()
+            self._reconnect_thread = None
+        if self.port_name is None:
+            return
+        with suppress(ConnectionLost):
+            self.live_release_all()
+            with self._serial():
+                self._reset()
+        self._close()
+        self._live_notes.clear()
         self.log(f"disconnected from {self.port_name}")
         self.port_name = None
 
     def reset(self):
         self.stop()
-        with self._serial_lock:
-            self.log("resetting tesla coil controller...")
-            self._reset()
+        try:
+            with self._serial():
+                self.log("resetting tesla coil controller...")
+                self._reset()
+        except ConnectionLost:
+            self._reconnect_in_background()
         self._live_notes.clear()
 
     def play(self, song: Song, start: float = 0.0):
         if self._sh is None:
-            raise RuntimeError("not connected to the tesla coil controller")
+            reconnecting = "still reconnecting to" if self._reconnecting else "not connected to"
+            raise RuntimeError(f"{reconnecting} the tesla coil controller")
         self.stop()
         self.live_release_all()
         self.current_song = song
@@ -210,19 +242,96 @@ class CoilPlayer:
         if self.state != PlayerState.IDLE or note in self._live_notes:
             return
         self._live_notes.add(note)
-        with self._serial_lock:
-            self._send_midi([0x90 | LIVE_CHANNEL, note, velocity], 0)
+        try:
+            with self._serial():
+                self._send_midi([0x90 | LIVE_CHANNEL, note, velocity], 0)
+        except ConnectionLost:
+            self._live_notes.clear()
+            self._reconnect_in_background()
 
     def live_note_off(self, note: int):
         if self._sh is None or note not in self._live_notes:
             return
         self._live_notes.discard(note)
-        with self._serial_lock:
-            self._send_midi([0x80 | LIVE_CHANNEL, note, 0], 0)
+        try:
+            with self._serial():
+                self._send_midi([0x80 | LIVE_CHANNEL, note, 0], 0)
+        except ConnectionLost:
+            self._live_notes.clear()
+            self._reconnect_in_background()
 
     def live_release_all(self):
         for note in list(self._live_notes):
             self.live_note_off(note)
+
+    def _open(self, port_name: str):
+        # setup the serial connection with the tesla coil controller
+        sh = SerialHandler(port_name)
+        sh.open()
+        self._sh = sh
+        self.port_name = port_name
+        self.log(f"connected to {port_name}")
+        sleep(0.05)
+
+        # force a reset of the tesla coil controller, the first one syncs the sequence number
+        try:
+            with self._serial_lock:
+                for _ in range(2):
+                    self._reset()
+        except OSError:
+            self._close()
+            raise
+
+    def _close(self):
+        if self._sh is not None:
+            # closing a port that's gone fails as well
+            with suppress(OSError):
+                self._sh.close()
+        self._sh = None
+        self.coil_model.clear()
+
+    @contextmanager
+    def _serial(self) -> Generator[None]:
+        """Holds the serial lock, and turns a serial error into closing the port and raising ConnectionLost."""
+        with self._serial_lock:
+            if self._sh is None:
+                raise ConnectionLost("not connected")
+            try:
+                yield
+            # pyserial's SerialException is an OSError as well, like the errno 5 when the USB device disappears
+            except OSError as e:
+                self._close()
+                self.log(f"lost the connection with {self.port_name}: {e}")
+                raise ConnectionLost(str(e)) from e
+
+    def _reconnect(self, abort: threading.Event | None = None) -> bool:
+        """Reconnects until it succeeds (returns True), disconnect() cancels it or the abort event is set."""
+        self._reconnecting = True
+        self.log(f"reconnecting to {self.port_name}...")
+        try:
+            while not self._cancel_reconnect.is_set() and not (abort is not None and abort.is_set()):
+                # follow the stable name, as the device can come back under another name
+                port = str(self._stable_port.resolve()) if self._stable_port is not None else self.port_name
+                if port is not None and Path(port).exists():
+                    try:
+                        self._open(port)
+                        return True
+                    except OSError as e:
+                        self.log(f"could not reconnect yet: {e}", debug=True)
+                self._cancel_reconnect.wait(RECONNECT_INTERVAL)
+            return False
+        finally:
+            self._reconnecting = False
+
+    def _reconnect_in_background(self):
+        if self.port_name is None or self._cancel_reconnect.is_set():
+            return
+        if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
+            return
+        # already reconnecting before the thread starts, so the state doesn't show disconnected meanwhile
+        self._reconnecting = True
+        self._reconnect_thread = threading.Thread(target=self._reconnect, daemon=True)
+        self._reconnect_thread.start()
 
     def _reset(self):
         self.coil_model.clear()
@@ -267,9 +376,27 @@ class CoilPlayer:
 
     def _play_song(self, song: Song, start: float):
         self.log(f'playing "{song.name}"' + (f" from {start:.1f}s" if start else ""))
+        while True:
+            try:
+                terminated = self._play_song_from(song, start)
+                break
+            except ConnectionLost:
+                # resume the song once reconnected, from the note that didn't make it
+                if not self._reconnect(abort=self._stop_event):
+                    # stopped while reconnecting, keep reconnecting unless it was disconnect() that stopped it
+                    self._reconnect_in_background()
+                    terminated = True
+                    break
+                start = self.position
+                self.log(f'resuming "{song.name}" from {start:.1f}s')
 
+        # log some statistics
+        song_end = "stopped" if terminated else "finished"
+        self.log(f'{song_end} playing "{song.name}" (notes_on: {self.notes_on}, notes_off: {self.notes_off})')
+
+    def _play_song_from(self, song: Song, start: float) -> bool:
         # enter midi mode
-        with self._serial_lock:
+        with self._serial():
             self._write([TYPE_MIDI_START, 0x00])
             sleep(0.05)
             self._read()
@@ -278,14 +405,11 @@ class CoilPlayer:
         terminated = self._play_note_events(song, start)
 
         # exit midi mode
-        with self._serial_lock:
+        with self._serial():
             self._write([TYPE_MIDI_END, 0x00])
             sleep(0.01)
             self._read()
-
-        # log some statistics
-        song_end = "stopped" if terminated else "finished"
-        self.log(f'{song_end} playing "{song.name}" (notes_on: {self.notes_on}, notes_off: {self.notes_off})')
+        return terminated
 
     def _play_note_events(self, song: Song, start: float) -> bool:
         # notes that are currently on, so their note_off is sent even when the part is muted halfway
@@ -294,7 +418,7 @@ class CoilPlayer:
             return self._play_sounding_note_events(song, start, sounding)
         finally:
             # the controller doesn't release the notes at the end of the stream, so turn them off here
-            with self._serial_lock:
+            with self._serial():
                 for channel, note in sounding:
                     self._send_midi([0x80 | channel, note, 0], 0)
 
@@ -328,7 +452,7 @@ class CoilPlayer:
                     continue
                 sounding.discard(note)
                 self.notes_off += 1
-            with self._serial_lock:
+            with self._serial():
                 self._send_midi(event.midi_bytes, event.time - previous_time)
             previous_time = event.time
         # play the silence until the end of the song as well

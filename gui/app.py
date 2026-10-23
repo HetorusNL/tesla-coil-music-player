@@ -365,16 +365,24 @@ class PlayerPage:
     def update(self):
         player = self.player
         state = player.state
+        # a song that lost the connection keeps playing once reconnected, show the reconnecting meanwhile
+        status = PlayerState.RECONNECTING if player.reconnecting else state
         self.status_badge.set_text(
             {
                 PlayerState.DISCONNECTED: "disconnected",
                 PlayerState.IDLE: f"connected · {player.port_name}",
                 PlayerState.PLAYING: "playing",
-            }[state]
+                PlayerState.RECONNECTING: f"reconnecting · {player.port_name}",
+            }[status]
         )
         self.status_badge.props(
             "color="
-            + {PlayerState.DISCONNECTED: "grey", PlayerState.IDLE: "positive", PlayerState.PLAYING: "orange"}[state]
+            + {
+                PlayerState.DISCONNECTED: "grey",
+                PlayerState.IDLE: "positive",
+                PlayerState.PLAYING: "orange",
+                PlayerState.RECONNECTING: "negative",
+            }[status]
         )
         connected = state != PlayerState.DISCONNECTED
         if connected != self.was_connected:
@@ -383,7 +391,7 @@ class PlayerPage:
         self.connect_button.set_text("Disconnect" if connected else "Connect")
         self.connect_button.props(f"icon={'link_off' if connected else 'link'}")
         self.port_select.set_enabled(not connected)
-        self.reset_button.set_enabled(connected)
+        self.reset_button.set_enabled(connected and not player.reconnecting)
 
         # the speaker playback of this tab ends with the song, and follows the muted parts
         speaker = self.speaker
@@ -622,7 +630,10 @@ class PlayerPage:
             self.play_on_speaker(speaker.song, speaker.parts, speaker.label, fraction * speaker.song.length)
         elif self.player.state == PlayerState.PLAYING and self.player.current_song is not None:
             self.release_all_keys()
-            self.player.play(self.player.current_song, fraction * self.player.current_song.length)
+            try:
+                self.player.play(self.player.current_song, fraction * self.player.current_song.length)
+            except Exception as error:
+                ui.notify(f"Could not play: {error}", type="negative")
         elif self.selected is not None and self.play_button.enabled:
             self.play(fraction * self.selected.length)
         self.update()
