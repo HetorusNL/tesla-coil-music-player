@@ -4,16 +4,19 @@
 
 #include "timer_manager.h"
 
+#include "spark_generator.h"
+
 CoilTimer* TimerManager::timers[NUM_TIMERS] = {0};
 
 TimerManager::TimerManager() {
-    // give USART3 (Serial) the highest priority, the timers get priority 5
+    // give USART3 (Serial) the highest priority, the spark generator gets priority 5
     NVIC_SetPriority(USART3_IRQn, 1);  // lower number = higher priority
 
-    // create the timer objects
+    // create the timer objects, and let the spark generator make their sparks
     for (int i = 0; i < NUM_TIMERS; i++) {
-        timers[i] = new CoilTimer(i, &timer_config[i]);
+        timers[i] = new CoilTimer(i);
     }
+    SparkGenerator::begin(timers, NUM_TIMERS);
 }
 
 TimerManager::~TimerManager() {

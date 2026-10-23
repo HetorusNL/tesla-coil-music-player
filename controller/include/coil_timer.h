@@ -8,8 +8,6 @@
 
 #include "packet_handler_constants.h"
 
-#define COIL_PIN 10
-
 // the settings of the sparks, the GUI sends them with the config message after connecting
 struct SparkConfig {
     // the settings of the config message
@@ -36,23 +34,16 @@ struct SparkConfig {
     float velocity_sensitivity = 0.0f;
 };
 
+// a note on the coil: sparks at the frequency of the note, the SparkGenerator puts the sparks of all timers on the coil
 class CoilTimer {
 public:
-    // hardware_timer related properties
-    struct Config {
-        TIM_TypeDef* type_def;
-        IRQn_Type irq_type;
-    };
-
-public:
-    CoilTimer(int id, Config* config);
+    CoilTimer(int id);
     ~CoilTimer();
 
     CoilTimer* start();
     CoilTimer* stop();
     CoilTimer* set_frequency(double frequency);
-    inline void set_velocity(uint8_t velocity) { _velocity = velocity; };
-    void create_spark(uint16_t num_active_timers);
+    CoilTimer* set_velocity(uint8_t velocity);
     // handles the config message: setting, index, value (2 bytes, big endian)
     static PHC::PACKET_HANDLE_RESULT configure(uint8_t* data, uint8_t len);
 
@@ -62,7 +53,7 @@ public:
     void release();
 
 private:
-    void isr();
+    void update_on_ticks();
     inline float get_on_time() {
         const uint16_t* on_times = spark_config.on_times;
         uint16_t index = (uint16_t)_frequency / 100;
@@ -72,21 +63,22 @@ private:
         float fraction = (((uint16_t)_frequency % 100) + 1) / 100.0f;
         return on_times[index] + ((int)on_times[index + 1] - (int)on_times[index]) * fraction;
     }
-    bool is32bit() const {
-        // STM32F7: TIM2 and TIM5 are 32-bit
-        return (config->type_def == TIM2 || config->type_def == TIM5);
-    }
-    uint32_t get_arr_limit() const { return is32bit() ? 0xFFFFFFFF : 0xFFFF; }
 
 private:
-    HardwareTimer* hardware_timer;
+    // the SparkGenerator reads the timing of the sparks in its interrupt
+    friend class SparkGenerator;
+
     const int id;
-    Config* config;  // pointer to config set in constructor, no deletion here
     double _frequency;
     uint8_t _velocity;
-    bool active;
-    bool spark_enabled;
     bool in_use;
+    // the fields below are shared with the interrupt of the SparkGenerator, change them with the interrupts disabled
+    volatile bool active;
+    // time between the sparks and the time of the next spark, in ticks of the SparkGenerator with 32 fractional bits
+    uint64_t period;
+    uint64_t next_spark;
+    // the length of the sparks, in ticks of the SparkGenerator
+    uint32_t on_ticks;
 
     // shared by all timers
     static SparkConfig spark_config;

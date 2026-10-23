@@ -4,6 +4,7 @@
 
 #include "packet_handler.h"
 
+#include "spark_test.h"
 #include "utils.h"
 
 PacketHandler::PacketHandler()
@@ -105,6 +106,11 @@ void PacketHandler::handle_packet() {
     case TYPE_RESET:
         handle_result(perform_reset());
         break;
+#ifdef SPARK_TEST
+    case TYPE_TEST:
+        handle_result(SparkTest::handle(data, len));
+        break;
+#endif
     default:
         break;  // invalid packet received!
     }

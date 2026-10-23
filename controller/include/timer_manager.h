@@ -11,20 +11,6 @@ class TimerManager {
 public:
     static constexpr int NUM_TIMERS = 9;
 
-private:
-    CoilTimer::Config timer_config[NUM_TIMERS] = {
-        {TIM1, TIM1_UP_TIM10_IRQn},    //
-        {TIM2, TIM8_UP_TIM13_IRQn},    //
-        {TIM3, TIM3_IRQn},             //
-        {TIM4, TIM4_IRQn},             //
-        {TIM5, TIM6_DAC_IRQn},         //
-        {TIM6, TIM7_IRQn},             //
-        {TIM7, TIM2_IRQn},             //
-        {TIM8, TIM5_IRQn},             //
-        {TIM12, TIM8_BRK_TIM12_IRQn},  //
-    };
-
-public:
     TimerManager();
     ~TimerManager();
 

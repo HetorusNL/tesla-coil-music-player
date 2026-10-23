@@ -16,7 +16,6 @@ void setup() {
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);  // same as LED_BUILTIN
     pinMode(LED_RED, OUTPUT);
-    pinMode(COIL_PIN, OUTPUT);
     // flash the LEDS to show we're starting
     digitalWrite(LED_RED, HIGH);
     delay(100);
