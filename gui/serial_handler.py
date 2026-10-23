@@ -33,16 +33,6 @@ class SerialHandler:
     def read(self, num_bytes: int = 256) -> bytes:
         return self.port.read(num_bytes)
 
-    def read_msg(self, num_bytes: int = 256) -> tuple[bool, list[int]]:
-        msg = self.read(num_bytes)
-        # TODO: temporary sequence number mismatch handling
-        # change to retransmitting the broken message (with sequence number)
-        result = True
-        if len(msg) > 2:
-            if msg[1] == 0x15:
-                self.sequence_number = msg[2]
-                result = False
-            elif msg[1] == 0xFF:
-                # debug print of the controller, logged by the caller
-                result = False
-        return result, list(msg)
+    def read_msg(self, num_bytes: int = 256) -> list[int]:
+        # the replies are parsed by the caller, which knows the message it awaits a reply to
+        return list(self.read(num_bytes))

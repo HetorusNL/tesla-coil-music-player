@@ -4,12 +4,15 @@
 #
 # This file is part of the Tesla Coil Music Player.
 
+import asyncio
 import hashlib
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
+from typing import cast
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse
@@ -18,8 +21,16 @@ from serial.tools import list_ports
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from gui.coil_model import COIL_TIMERS, MeterReading
-from gui.coil_player import CoilPlayer, LogLine, PlayerState
+from gui.coil_model import COIL_TIMERS, MeterReading, note_frequency, spark_on_time
+from gui.coil_player import CoilPlayer, Delivery, LogLine, PlayerState
+from gui.config import (
+    ABSOLUTE_MAX_ON_TIME,
+    DEFAULT_ON_TIMES,
+    MAX_TABLE_ON_TIME,
+    MAX_VOLUME,
+    NUM_ON_TIMES,
+    SparkConfig,
+)
 from gui.song import DRUM_CHANNEL, PartKey, Song
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -43,6 +54,15 @@ LOAD_BINS = 400  # the number of time slices of the coil load strip
 LOG_LINES = 1000  # the number of log lines shown
 POWER_FULL_SCALE = 0.05  # the duty cycle of a full power meter
 PEAK_HOLD = 1.5  # seconds the peak of the power meter holds before it falls back
+SETTINGS_DELAY = 0.5  # seconds without changes before a changed setting is applied
+SOFT_VELOCITY = 64  # the velocity of the dashed curve of the spark chart
+# the pages of the sidebar: name, label and icon
+PAGES = [
+    ("player", "Player", "music_note"),
+    ("keyboard", "Keyboard", "piano"),
+    ("settings", "Settings", "tune"),
+    ("log", "Log", "list"),
+]
 
 CSS = """
 .piano { display: flex; align-items: flex-start; user-select: none; touch-action: none; }
@@ -51,10 +71,11 @@ CSS = """
 .piano-key.black { width: 24px; height: 85px; margin: 0 -12px; background: #222; z-index: 1; }
 .piano-key.pressed { background: var(--q-primary); }
 .roll { position: relative; width: 100%; cursor: pointer; user-select: none; }
-.roll-notes { display: block; width: 100%; height: 72px; background: rgba(128, 128, 128, 0.08); border-radius: 4px 4px 0 0; }
+.roll-notes { display: block; width: 100%; height: 140px; background: rgba(128, 128, 128, 0.08); border-radius: 4px 4px 0 0; }
 .roll-load { display: block; width: 100%; height: 8px; background: rgba(128, 128, 128, 0.18); border-radius: 0 0 4px 4px; }
 .roll-played { position: absolute; left: 0; top: 0; bottom: 0; width: 0; pointer-events: none;
                background: rgba(128, 128, 128, 0.18); border-right: 2px solid var(--q-primary); }
+.spark-chart { width: 100%; height: 260px; user-select: none; touch-action: none; }
 .part-color { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .meter-leds { display: flex; gap: 2px; }
 .meter-led { width: 7px; height: 14px; border-radius: 1px; background: rgba(255, 255, 255, 0.2); }
@@ -118,18 +139,28 @@ class PlayerPage:
         self.parts_state: tuple[object, ...] = ()
 
         ui.add_css(CSS)
-        self.build_header(logout)
-        with ui.row().classes("w-full items-start gap-4"):
-            with ui.column().classes("w-full md:w-96 gap-4"):
-                self.build_connection(default_port)
-                self.build_songs()
-            with ui.column().classes("flex-1 min-w-0 gap-4"):
-                self.build_now_playing()
-                self.build_parts()
-                self.build_keyboard()
-        with ui.expansion("Log", icon="list").classes("w-full"):
-            ui.switch("Debug messages (packets to and from the controller)", on_change=self.toggle_debug)
-            self.log = ui.log(max_lines=LOG_LINES).classes("w-full h-64")
+        # the pages are hidden instead of removed, so the piano roll and the log keep their content
+        self.pages: dict[str, ui.column] = {}
+        drawer = self.build_sidebar()
+        self.build_header(logout, drawer)
+        with self.page("player"):
+            with ui.row().classes("w-full items-start gap-4"):
+                with ui.column().classes("w-full md:w-96 gap-4"):
+                    self.build_connection(default_port)
+                    self.build_songs()
+                with ui.column().classes("flex-1 min-w-0 gap-4"):
+                    self.build_now_playing()
+                    self.build_parts()
+        with self.page("keyboard"):
+            self.build_keyboard()
+        with self.page("settings"):
+            self.build_settings()
+        with self.page("log"):
+            with ui.card().classes("w-full"):
+                ui.label("Log").classes("text-h6")
+                ui.switch("Debug messages (packets to and from the controller)", on_change=self.toggle_debug)
+                self.log = ui.log(max_lines=LOG_LINES).classes("w-full h-[70vh]")
+        self.show_page(self.current_page)
 
         ui.keyboard(on_key=self.on_key, ignore=["input", "select", "textarea"])
         # release all keys when the window loses focus, as the keyup events are lost then
@@ -144,12 +175,45 @@ class PlayerPage:
 
     # --- layout ---
 
-    def build_header(self, logout: bool):
+    def build_sidebar(self) -> ui.left_drawer:
+        # like Home Assistant: always shown on wide screens, behind the menu button of the header on small ones
+        # the page this browser showed last, nicegui doesn't type the stored values
+        storage = cast(dict[str, object], app.storage.user)  # pyright: ignore[reportUnknownMemberType]
+        stored_page = storage.get("page")
+        self.current_page = stored_page if isinstance(stored_page, str) else "player"
+        with ui.left_drawer(bordered=True).props("width=180 breakpoint=1023") as drawer:
+            with ui.tabs(on_change=self.change_page) as tabs:
+                tabs.props("vertical inline-label active-color=primary indicator-color=primary align=left").classes(
+                    "w-full"
+                )
+                for name, label, icon in PAGES:
+                    ui.tab(name, label, icon).props("no-caps content-class=w-full justify-start")
+            tabs.set_value(self.current_page)
+        return drawer
+
+    def page(self, name: str) -> ui.column:
+        self.pages[name] = ui.column().classes("w-full gap-4")
+        return self.pages[name]
+
+    def change_page(self, e: events.ValueChangeEventArguments[str | ui.tab | ui.tab_panel | None]):
+        if not isinstance(e.value, str):
+            return
+        self.current_page = e.value
+        app.storage.user["page"] = e.value
+        self.show_page(e.value)
+
+    def show_page(self, name: str):
+        for page_name, page in self.pages.items():
+            page.set_visibility(page_name == name)
+
+    def build_header(self, logout: bool, drawer: ui.left_drawer):
         # three columns: the outer ones share the remaining space equally, so the meter stays centered
         with ui.header().classes("items-center"):
             grid = "grid grid-cols-[1fr_auto_1fr] max-sm:flex max-sm:justify-between"
             with ui.element("div").classes(f"w-full {grid} items-center gap-4"):
                 with ui.row().classes("items-center no-wrap min-w-0"):
+                    menu = ui.button(icon="menu", on_click=drawer.toggle).props("flat round dense color=white")
+                    menu.classes("lg:hidden")
                     ui.icon("bolt", size="md")
                     ui.label("Tesla Coil Music Player").classes("text-lg font-medium truncate max-md:hidden")
                 self.build_meter()
@@ -177,6 +241,173 @@ class PlayerPage:
         self.meter_state: tuple[object, ...] = ()
         self.meter_peak_value = 0.0
         self.meter_peak_time = 0.0
+
+    def build_settings(self):
+        with ui.card().classes("w-full"):
+            with ui.row().classes("w-full items-center"):
+                ui.label("Coil settings").classes("text-h6")
+                ui.space()
+                # whether the last change got saved and sent to the coil
+                self.settings_status = ui.label().classes("text-caption")
+            ui.label(
+                "The on-time of a spark is the on-time of its frequency band in the table, times the volume, "
+                "shortened for lower note velocities as far as the velocity sensitivity goes, and limited to the "
+                f"min and max on-time (never beyond {ABSOLUTE_MAX_ON_TIME} µs). Changes apply on enter or when "
+                "leaving the field, and are sent to the coil right away."
+            ).classes("text-caption text-grey")
+            with ui.row().classes("items-center gap-4"):
+                self.volume_input = self.setting_input("Volume (%)", 0, MAX_VOLUME * 100, 1)
+                self.velocity_input = self.setting_input("Velocity sensitivity (%)", 0, 100, 1)
+                self.min_on_time_input = self.setting_input("Min on-time (µs)", 0, ABSOLUTE_MAX_ON_TIME, 1)
+                self.max_on_time_input = self.setting_input("Max on-time (µs)", 0, ABSOLUTE_MAX_ON_TIME, 1)
+                ui.button("Defaults", icon="settings_backup_restore", on_click=self.reset_settings).props("outline")
+            self.spark_summary = ui.label().classes("text-caption")
+            # drawn by spark_chart.js, dragging a point changes the on-time of its band in the table
+            self.spark_chart = ui.element("div").classes("spark-chart")
+            self.spark_chart.on("pointmoved", self.point_moved, args=["detail"])
+            ui.label(
+                "The points are the on-time table, drag them to change it. The line is the resulting spark at full "
+                f"velocity (the table times the volume, within the min and max on-time), dashed at velocity "
+                f"{SOFT_VELOCITY} when the velocity sensitivity is set."
+            ).classes("text-caption text-grey")
+            with ui.row().classes("w-full items-center"):
+                ui.label("On-time table (µs per frequency band)").classes("text-subtitle2")
+                ui.button("Defaults", icon="settings_backup_restore", on_click=self.reset_table).props("outline dense")
+            with ui.element("div").classes("grid grid-cols-2 sm:grid-cols-5 gap-2 w-full"):
+                self.on_time_inputs = [
+                    self.setting_input(
+                        f"{idx * 100}–{idx * 100 + 99} Hz" if idx < NUM_ON_TIMES - 1 else f"≥ {idx * 100} Hz",
+                        0,
+                        MAX_TABLE_ON_TIME,
+                        1,
+                    )
+                    for idx in range(NUM_ON_TIMES)
+                ]
+        self.config_version = -1
+        self.chart_version = -1
+        self.settings_changes = 0
+
+    def setting_input(self, label: str, low: float, high: float, step: float) -> ui.number:
+        number = ui.number(label, min=low, max=high, step=step, on_change=self.setting_changed)
+        number.props("dense").classes("w-40")
+        number.on("blur", self.apply_settings)
+        number.on("keydown.enter", self.apply_settings)
+        return number
+
+    def fill_settings(self, config: SparkConfig):
+        self.volume_input.set_value(round(config.volume * 100, 1))
+        self.velocity_input.set_value(round(config.velocity_sensitivity * 100))
+        self.min_on_time_input.set_value(config.min_on_time)
+        self.max_on_time_input.set_value(config.max_on_time)
+        for number, on_time in zip(self.on_time_inputs, config.on_times):
+            number.set_value(on_time)
+        # the range of the sparks over all MIDI notes at full velocity, the table does nothing while it's one value
+        on_times = [spark_on_time(note_frequency(note), 127, config) for note in range(128)]
+        summary = f"Spark on-times of all notes at full velocity: {min(on_times)}–{max(on_times)} µs"
+        if max(on_times) == config.min_on_time:
+            summary += ", all at the min on-time: raise the volume to make the table count"
+        self.spark_summary.set_text(summary)
+
+    async def setting_changed(self):
+        # filling in the settings in use changes the fields as well, that's not a change to apply
+        if self.settings_from_inputs() == self.player.spark_config:
+            return
+        # the arrows of the fields only change the value, apply it once the changes stop for a moment
+        self.settings_changes += 1
+        changes = self.settings_changes
+        self.set_settings_status("Applying…", "text-grey")
+        await asyncio.sleep(SETTINGS_DELAY)
+        if changes == self.settings_changes:
+            await self.apply_settings()
+
+    async def apply_settings(self):
+        config = self.settings_from_inputs()
+        if config is None:
+            self.set_settings_status("Not applied, fill in all the settings", "text-negative")
+            return
+        if config == self.player.spark_config:
+            # nothing changed after all, e.g. the arrows went up and down again
+            if self.settings_status.text == "Applying…":
+                self.set_settings_status("")
+            return
+        await self.save_settings(config)
+
+    def settings_from_inputs(self) -> SparkConfig | None:
+        """The settings as filled in, None when a field is empty."""
+        inputs = [self.volume_input, self.velocity_input, self.min_on_time_input, self.max_on_time_input]
+        values = [number.value for number in inputs + self.on_time_inputs]
+        numbers = [value for value in values if value is not None]
+        if len(numbers) != len(values):
+            return None
+        volume, velocity_sensitivity, min_on_time, max_on_time, *on_times = numbers
+        return SparkConfig(
+            on_times=[int(on_time) for on_time in on_times],
+            min_on_time=int(min_on_time),
+            max_on_time=int(max_on_time),
+            volume=round(volume / 100, 4),
+            velocity_sensitivity=round(velocity_sensitivity / 100, 4),
+        )
+
+    async def reset_settings(self):
+        if await self.confirm("Reset all coil settings to their defaults?"):
+            await self.save_settings(SparkConfig())
+
+    async def reset_table(self):
+        if await self.confirm("Reset the on-time table to its defaults? The other settings stay as they are."):
+            await self.save_settings(replace(self.player.spark_config, on_times=list(DEFAULT_ON_TIMES)))
+
+    @staticmethod
+    async def confirm(question: str) -> bool:
+        with ui.dialog() as dialog, ui.card():
+            ui.label(question)
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+                ui.button("Reset", on_click=lambda: dialog.submit(True)).props("color=negative")
+        answer = await dialog
+        dialog.delete()
+        return answer is True
+
+    async def save_settings(self, config: SparkConfig):
+        try:
+            delivery = await run.io_bound(self.player.set_spark_config, config)
+        except ValueError as e:
+            self.set_settings_status(f"Not applied, {e}", "text-negative")
+            # show the settings that are in use again
+            self.config_version = -1
+        else:
+            time = datetime.now().strftime("%H:%M:%S")
+            if delivery is None:
+                self.set_settings_status(f"✓ Saved · sent to the coil once connected · {time}", "text-positive")
+            elif delivery == Delivery.ACKNOWLEDGED:
+                self.set_settings_status(f"✓ Saved and confirmed by the coil · {time}", "text-positive")
+            elif delivery == Delivery.REJECTED:
+                self.set_settings_status(f"Saved, but the coil rejected it (see the log) · {time}", "text-negative")
+            else:
+                self.set_settings_status(f"Saved, but the coil didn't confirm it · {time}", "text-warning")
+        self.update()
+
+    async def point_moved(self, e: events.GenericEventArguments):
+        detail = cast(dict[str, float], e.args["detail"])
+        config = self.player.spark_config
+        on_times = list(config.on_times)
+        on_times[int(detail["index"])] = min(max(round(detail["value"]), 0), MAX_TABLE_ON_TIME)
+        await self.save_settings(replace(config, on_times=on_times))
+
+    def update_spark_chart(self, config: SparkConfig):
+        velocity_factor = 1 - config.velocity_sensitivity * (1 - SOFT_VELOCITY / 127)
+        data = {
+            "points": config.on_times,
+            "volume": config.volume,
+            "min": config.min_on_time,
+            "max": config.max_on_time,
+            "absoluteMax": ABSOLUTE_MAX_ON_TIME,
+            "softFactor": velocity_factor if config.velocity_sensitivity > 0 else None,
+        }
+        self.client.run_javascript(f"teslaSparkChart.set({self.spark_chart.id}, {json.dumps(data)})")
+
+    def set_settings_status(self, text: str, color: str = ""):
+        self.settings_status.set_text(text)
+        self.settings_status.classes(replace=f"text-caption {color}")
 
     def build_connection(self, default_port: str):
         with ui.card().classes("w-full"):
@@ -365,6 +596,14 @@ class PlayerPage:
     def update(self):
         player = self.player
         state = player.state
+        # show the settings when this or another tab changed them
+        if self.config_version != player.config_version:
+            self.config_version = player.config_version
+            self.fill_settings(player.spark_config)
+        # the chart is drawn in the browser, so wait for its connection
+        if self.chart_version != player.config_version and self.client.has_socket_connection:
+            self.chart_version = player.config_version
+            self.update_spark_chart(player.spark_config)
         # a song that lost the connection keeps playing once reconnected, show the reconnecting meanwhile
         status = PlayerState.RECONNECTING if player.reconnecting else state
         self.status_badge.set_text(
@@ -462,7 +701,7 @@ class PlayerPage:
         else:
             reading = self.player.coil_model.reading()
             source = "coil"
-        duty = reading.duty_cycle
+        duty = reading.duty_cycle(self.player.spark_config)
         now = monotonic()
         if duty >= self.meter_peak_value or now - self.meter_peak_time > PEAK_HOLD:
             self.meter_peak_value = duty
@@ -488,7 +727,7 @@ class PlayerPage:
     @staticmethod
     def simulate_coil(song: Song, enabled: set[PartKey], position: float) -> MeterReading:
         # the notes sounding at the position, the ones that started last don't get a timer
-        notes: list[int] = []
+        notes: list[tuple[int, int]] = []
         keys: set[tuple[int, int]] = set()
         for span in song.spans:
             if span.start > position:
@@ -496,7 +735,7 @@ class PlayerPage:
             key = (span.part[1], span.note)
             if span.part in enabled and position < span.end and key not in keys:
                 keys.add(key)
-                notes.append(span.note)
+                notes.append((span.note, span.velocity))
         return MeterReading(tuple(notes[:COIL_TIMERS]), max(len(notes) - COIL_TIMERS, 0))
 
     def push_log_lines(self, lines: list[LogLine]):
@@ -704,7 +943,8 @@ class PlayerPage:
         if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta or e.key.code not in KEY_OFFSETS:
             return
         source = f"key:{e.key.code}"
-        if e.action.keydown and not e.action.repeat:
+        # the laptop keys only play on the keyboard page, but always release the notes
+        if e.action.keydown and not e.action.repeat and self.current_page == "keyboard":
             self.press(source, KEY_OFFSETS[e.key.code])
         elif e.action.keyup:
             self.release(source)
@@ -751,7 +991,7 @@ class PlayerPage:
 
 def setup(player: CoilPlayer, default_port: str, password: str | None):
     app.add_static_files("/static", STATIC_DIR)
-    for script in ["synth.js", "roll.js"]:
+    for script in ["synth.js", "roll.js", "spark_chart.js"]:
         # the content hash in the url makes browsers fetch the script again when it changed
         version = hashlib.sha256((STATIC_DIR / script).read_bytes()).hexdigest()[:12]
         ui.add_head_html(f'<script src="/static/{script}?v={version}"></script>', shared=True)

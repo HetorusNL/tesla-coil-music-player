@@ -17,6 +17,9 @@ dist/
 # NiceGUI
 .nicegui/
 
+# settings of the sparks, tuned per coil
+coil-config.json
+
 # MIDI files (songs)
 *.[mM][iI][dD]
 *.[mM][iI][dD][iI]

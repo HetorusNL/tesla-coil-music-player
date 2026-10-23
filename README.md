@@ -34,10 +34,14 @@ port, web port and songs folder options. The song browser starts in `./songs` of
 
 Features:
 
-- connect to the controller (auto-connects to `/dev/ttyACM0` on startup) and reset it
+- connect to the controller (auto-connects to `/dev/ttyACM0` on startup) and reset it, it pings the controller
+  while idle and reconnects by itself when the USB connection drops, resuming a playing song
 - browse folders for songs, play / stop / seek them on the coil or on the speaker of the browser, and upload new
   `.mid` files into the current folder
 - toggle the parts of a song (tracks and the MIDI channels within them), also during playback
 - preview a single part on the speaker of the device the browser runs on
 - play notes live on the coil and/or the speaker with the on-screen piano or the laptop keyboard (like LMMS: the
-  `Z`/`S` rows play the lower octave, the `Q`/number rows the upper octave)
+  `Z`/`S` rows play the lower octave, the `Q`/number rows the upper octave) on the keyboard page
+- set the spark on-times on the settings page: the on-time per frequency band (also by dragging the points of the
+  chart), the volume, the min and max on-time and the velocity sensitivity. They're saved to `./coil-config.json`
+  (see `--config`) and sent to the controller after connecting, which needs the firmware of this version

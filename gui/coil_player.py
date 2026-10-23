@@ -15,6 +15,7 @@ from pathlib import Path
 from time import perf_counter, sleep
 
 from gui.coil_model import CoilModel
+from gui.config import SparkConfig, load_config, save_config
 from gui.serial_handler import SerialHandler
 from gui.song import PartKey, Song
 
@@ -22,20 +23,44 @@ from gui.song import PartKey, Song
 TYPE_MIDI_START = 0x01
 TYPE_MIDI_MSG = 0x02
 TYPE_MIDI_END = 0x03
+TYPE_CONFIG = 0x04
+TYPE_PING = 0x05
 TYPE_RESET = 0xFF
-TYPE_NAMES = {TYPE_MIDI_START: "midi start", TYPE_MIDI_MSG: "midi", TYPE_MIDI_END: "midi end", TYPE_RESET: "reset"}
+TYPE_NAMES = {
+    TYPE_MIDI_START: "midi start",
+    TYPE_MIDI_MSG: "midi",
+    TYPE_MIDI_END: "midi end",
+    TYPE_CONFIG: "config",
+    TYPE_PING: "ping",
+    TYPE_RESET: "reset",
+}
+# the settings of the config message (SparkConfig::Setting of the firmware)
+SETTING_ON_TIME = 0x01
+SETTING_MIN_ON_TIME = 0x02
+SETTING_MAX_ON_TIME = 0x03
+SETTING_VOLUME = 0x04
+SETTING_VELOCITY_SENSITIVITY = 0x05
+# the volume and velocity sensitivity are sent in 1/10000
+FRACTION_SCALE = 10000
 # control values of the replies of the tesla coil controller
 STX = 0x02
 ETX = 0x03
 ACK = 0x06
 NACK = 0x15
 DEBUG = 0xFF
+# the kind of reply for a NACK of a message the controller dropped, as it expected another sequence number
+OUT_OF_SYNC = -1
 
 # MIDI channel used for notes played live on the keyboard
 LIVE_CHANNEL = 0
 
 # time between the attempts to reconnect after the connection with the controller was lost
 RECONNECT_INTERVAL = 0.5
+# seconds to wait for the reply to a message whose reply matters
+REPLY_TIMEOUT = 0.1
+# while connected and idle the controller is pinged, a few unanswered pings count as a lost connection
+PING_INTERVAL = 1.0
+MAX_MISSED_PINGS = 3
 # stable names of the USB serial devices, the device itself can get another name when it reconnects
 SERIAL_BY_ID = Path("/dev/serial/by-id")
 
@@ -67,6 +92,14 @@ class ConnectionLost(Exception):
     """The serial connection with the controller was lost, e.g. when the coil reset its USB connection."""
 
 
+class Delivery(Enum):
+    """What the controller replied to a message."""
+
+    ACKNOWLEDGED = "acknowledged"
+    REJECTED = "rejected"
+    NO_REPLY = "no reply"
+
+
 class PlayerState(Enum):
     DISCONNECTED = "disconnected"
     IDLE = "idle"
@@ -77,9 +110,15 @@ class PlayerState(Enum):
 class CoilPlayer:
     """Plays songs and live notes on the tesla coil controller, shared by all GUI clients."""
 
-    def __init__(self, song_dir: Path):
+    def __init__(self, song_dir: Path, config_path: Path):
         # the folder new browser tabs start browsing in
         self.song_dir = song_dir
+        # the settings of the sparks, sent to the controller after connecting
+        self.config_path = config_path
+        self.spark_config = load_config(config_path)
+        self.config_version = 0
+        # the value of every (setting, index) the controller has, so a change only sends what differs
+        self._controller_settings: dict[tuple[int, int], int] = {}
         # loaded songs per path, with the modification time they were loaded at (None when not a valid MIDI file)
         self._song_cache: dict[Path, tuple[float, Song | None]] = {}
         self.songs_version = 0
@@ -106,9 +145,12 @@ class CoilPlayer:
         self._reconnecting = False
         self._cancel_reconnect = threading.Event()
         self._reconnect_thread: threading.Thread | None = None
+        self._partial_reply: list[int] = []
+        self._echo_remaining = 0
         self._live_notes: set[int] = set()
         # what the controller is playing, for the meter
         self.coil_model = CoilModel()
+        threading.Thread(target=self._watch_connection, daemon=True).start()
 
     @property
     def state(self) -> PlayerState:
@@ -217,6 +259,25 @@ class CoilPlayer:
             self._reconnect_in_background()
         self._live_notes.clear()
 
+    def set_spark_config(self, config: SparkConfig) -> Delivery | None:
+        """Saves the settings and sends them to the controller, returns its reply (None when not connected).
+
+        Raises ValueError for invalid settings."""
+        if errors := config.errors():
+            raise ValueError(", ".join(errors))
+        save_config(self.config_path, config)
+        self.spark_config = config
+        self.config_version += 1
+        if self._sh is None:
+            return None
+        try:
+            with self._serial():
+                return self._send_config()
+        except ConnectionLost:
+            # the reconnect sends the settings as well
+            self._reconnect_in_background()
+            return None
+
     def play(self, song: Song, start: float = 0.0):
         if self._sh is None:
             reconnecting = "still reconnecting to" if self._reconnecting else "not connected to"
@@ -269,6 +330,8 @@ class CoilPlayer:
         sh = SerialHandler(port_name)
         sh.open()
         self._sh = sh
+        self._partial_reply = []
+        self._echo_remaining = 0
         self.port_name = port_name
         self.log(f"connected to {port_name}")
         sleep(0.05)
@@ -278,6 +341,9 @@ class CoilPlayer:
             with self._serial_lock:
                 for _ in range(2):
                     self._reset()
+                # the controller might have restarted meanwhile, so send all settings
+                self._controller_settings.clear()
+                self._send_config()
         except OSError:
             self._close()
             raise
@@ -335,36 +401,142 @@ class CoilPlayer:
 
     def _reset(self):
         self.coil_model.clear()
-        self._write([TYPE_RESET, 0x00])
-        sleep(0.01)
-        self._read()
+        self._request([TYPE_RESET, 0x00])
 
-    def _write(self, msg: list[int]):
+    def _unconfirmed_settings(self) -> list[tuple[int, int, int]]:
+        """The (setting, index, value) of the settings the controller didn't confirm yet."""
+        config = self.spark_config
+        settings = [(SETTING_ON_TIME, idx, on_time) for idx, on_time in enumerate(config.on_times)]
+        settings += [
+            (SETTING_MIN_ON_TIME, 0, config.min_on_time),
+            (SETTING_MAX_ON_TIME, 0, config.max_on_time),
+            (SETTING_VOLUME, 0, round(config.volume * FRACTION_SCALE)),
+            (SETTING_VELOCITY_SENSITIVITY, 0, round(config.velocity_sensitivity * FRACTION_SCALE)),
+        ]
+        return [(s, i, v) for s, i, v in settings if self._controller_settings.get((s, i)) != v]
+
+    def _send_config(self) -> Delivery:
+        """Sends the settings that differ from the controller's, returns the worst reply to them."""
+        result = Delivery.ACKNOWLEDGED
+        for setting, index, value in self._unconfirmed_settings():
+            delivery = self._request([TYPE_CONFIG, 4, setting, index, value >> 8, value & 0xFF])
+            if delivery == Delivery.ACKNOWLEDGED:
+                self._controller_settings[(setting, index)] = value
+                continue
+            # not recorded, so the next change sends it again
+            self.log(
+                f"the controller {'rejected' if delivery == Delivery.REJECTED else 'did not confirm'} "
+                f"setting {setting:02x} index {index}: {value}"
+            )
+            if delivery == Delivery.NO_REPLY:
+                # the controller isn't answering, the next change or reconnect sends the remaining settings
+                return delivery
+            result = delivery
+        return result
+
+    def _request(self, msg: list[int], quiet: bool = False, retry: bool = True) -> Delivery:
+        """Writes the message and waits for the reply to it."""
         assert self._sh is not None
-        name = TYPE_NAMES.get(msg[0], f"type {msg[0]:02x}")
-        data = f": {hex_bytes(msg[2:])}" if msg[2:] else ""
-        self.log(f"→ {name} seq {self._sh.sequence_number}{data}", debug=True)
+        seq = self._sh.sequence_number
+        self._write(msg, quiet)
+        deadline = perf_counter() + REPLY_TIMEOUT
+        while True:
+            for reply, reply_seq in self._read(quiet):
+                if reply == OUT_OF_SYNC and retry:
+                    # the controller dropped the message, send it again with the sequence number it expects
+                    return self._request(msg, quiet, retry=False)
+                if reply_seq == seq and reply != OUT_OF_SYNC:
+                    return Delivery.ACKNOWLEDGED if reply == ACK else Delivery.REJECTED
+            if perf_counter() >= deadline:
+                return Delivery.NO_REPLY
+            sleep(0.001)
+
+    def _watch_connection(self):
+        # pings the controller while connected and idle, so a lost connection shows up without playing a song
+        missed = 0
+        while True:
+            sleep(PING_INTERVAL)
+            if self.state != PlayerState.IDLE:
+                missed = 0
+                continue
+            try:
+                with self._serial():
+                    delivery = self._request([TYPE_PING, 0x00], quiet=True)
+                    # settings the controller didn't confirm (e.g. after a lost reply) are sent again
+                    if delivery == Delivery.ACKNOWLEDGED and self._unconfirmed_settings():
+                        self._send_config()
+            except ConnectionLost:
+                self._reconnect_in_background()
+                missed = 0
+                continue
+            missed = 0 if delivery == Delivery.ACKNOWLEDGED else missed + 1
+            if missed >= MAX_MISSED_PINGS:
+                self.log(f"the controller did not reply to {missed} pings")
+                with self._serial_lock:
+                    self._close()
+                self._reconnect_in_background()
+                missed = 0
+
+    def _write(self, msg: list[int], quiet: bool = False):
+        assert self._sh is not None
+        if not quiet:
+            name = TYPE_NAMES.get(msg[0], f"type {msg[0]:02x}")
+            data = f": {hex_bytes(msg[2:])}" if msg[2:] else ""
+            self.log(f"→ {name} seq {self._sh.sequence_number}{data}", debug=True)
         self._sh.write_msg(msg)
 
-    def _read(self):
+    def _read(self, quiet: bool = False) -> list[tuple[int, int]]:
+        """Reads and logs the replies of the controller, returns their (ACK or NACK, sequence number)."""
         assert self._sh is not None
-        _, msg = self._sh.read_msg()
-        if not msg:
-            return
-        # the read can contain multiple replies, the regular ACKs are only interesting when debugging
-        replies: list[str] = []
-        while len(msg) >= 4 and msg[0] == STX and msg[1] == ACK and msg[3] == ETX:
-            replies.append(f"ACK seq {msg[2]}")
-            msg = msg[4:]
+        # a reply can be split over two reads, so the start of an incomplete one is kept for the next read
+        msg = self._partial_reply + self._sh.read_msg()
+        self._partial_reply = []
+        # the rest of the echo of a NACK of the previous read
+        skipped = msg[: self._echo_remaining]
+        msg = msg[self._echo_remaining :]
+        self._echo_remaining -= len(skipped)
+        replies: list[tuple[int, int]] = []
+        texts: list[str] = []
         debug = True
-        if len(msg) >= 3 and msg[0] == STX and msg[1] == NACK:
-            replies.append(f"NACK, expected seq {msg[2]}, received {hex_bytes(msg[4:])}")
-            debug = False
-        elif len(msg) >= 3 and msg[0] == STX and msg[1] == DEBUG:
-            replies.append(f'controller debug: "{bytes(msg[4:]).decode("utf-8", "ignore")}"')
-        elif msg:
-            replies.append(hex_bytes(msg))
-        self.log(f"← {', '.join(replies)}", debug=debug)
+        while msg:
+            if len(msg) < 4 and msg[0] == STX:
+                self._partial_reply = msg
+                break
+            if len(msg) >= 4 and msg[0] == STX and msg[1] == ACK and msg[3] == ETX:
+                # the regular ACKs are only interesting when debugging
+                replies.append((ACK, msg[2]))
+                texts.append(f"ACK seq {msg[2]}")
+                msg = msg[4:]
+                continue
+            if len(msg) >= 4 and msg[0] == STX and msg[1] == NACK and msg[3] == ETX:
+                # the NACK echoes what the controller received and a 0x00: the whole message (STX, seq, type,
+                # length, data, ETX) when it rejected it, only the STX and a zeroed seq when it was out of sync
+                if len(msg) < 7 or (msg[6] != 0 and len(msg) < 8):
+                    self._partial_reply = msg
+                    break
+                seq, echo = msg[2], msg[4:]
+                rejected = echo[1] == seq and echo[2] != 0
+                echo_length = 6 + echo[3] if rejected else 3
+                echo, msg = echo[:echo_length], echo[echo_length:]
+                self._echo_remaining = echo_length - len(echo)
+                if rejected:
+                    replies.append((NACK, seq))
+                    texts.append(f"NACK seq {seq}, rejected {hex_bytes(echo)}")
+                else:
+                    self._sh.sequence_number = seq
+                    replies.append((OUT_OF_SYNC, seq))
+                    texts.append(f"NACK, expected seq {seq}, received {hex_bytes(echo)}")
+                debug = False
+                continue
+            if len(msg) >= 4 and msg[0] == STX and msg[1] == DEBUG:
+                texts.append(f'controller debug: "{bytes(msg[4:]).decode("utf-8", "ignore")}"')
+            else:
+                texts.append(hex_bytes(msg))
+            # the rest belongs to the debug message (it has no length), or isn't a reply at all
+            break
+        if texts and not (quiet and debug):
+            self.log(f"← {', '.join(texts)}", debug=debug)
+        return replies
 
     def _send_midi(self, midi_bytes: list[int], delay: float):
         # the delay (in ms) since the previous message is sent along with the MIDI message

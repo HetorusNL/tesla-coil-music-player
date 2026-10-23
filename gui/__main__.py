@@ -26,6 +26,12 @@ def main():
         "--songs", type=Path, default=Path("songs"), help="folder to start browsing in (default: ./songs)"
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("coil-config.json"),
+        help="file with the settings of the sparks (default: ./coil-config.json)",
+    )
+    parser.add_argument(
         "--password",
         default=os.environ.get("TESLA_COIL_PASSWORD"),
         help="password of the web interface (default: $TESLA_COIL_PASSWORD)",
@@ -36,7 +42,10 @@ def main():
 
     # start in the current directory when there is no songs folder here
     song_dir = args.songs if args.songs.is_dir() else Path.cwd()
-    player = CoilPlayer(song_dir.resolve())
+    try:
+        player = CoilPlayer(song_dir.resolve(), args.config)
+    except ValueError as e:
+        parser.error(str(e))
     setup(player, args.serial_port, args.password or None)
 
     # connect to the tesla coil controller right away when it's plugged in
