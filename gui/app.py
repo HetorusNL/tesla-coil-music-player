@@ -126,7 +126,8 @@ class PlayerPage:
         self.folder = player.song_dir
         self.selected: Song | None = player.current_song or next(iter(player.list_folder(self.folder)[1]), None)
         self.output = "coil"
-        # where the play button plays, follows the connection but can be changed to the speaker
+        # where the song plays: the playing (or paused) song moves when it changes, otherwise the next song plays
+        # there, it follows the connection
         self.play_output = "speaker" if player.state == PlayerState.DISCONNECTED else "coil"
         self.was_connected = player.state != PlayerState.DISCONNECTED
         self.speaker: SpeakerPlayback | None = None
@@ -502,7 +503,7 @@ class PlayerPage:
                 self.play_output_toggle = ui.toggle(
                     {"coil": "Coil", "speaker": "Speaker"},
                     value=self.play_output,
-                    on_change=lambda e: setattr(self, "play_output", e.value),
+                    on_change=lambda e: self.set_play_output(e.value),
                 ).props("dense no-caps text-color=white toggle-color=white toggle-text-color=primary")
                 self.play_output_toggle.on("mousedown", js_handler="(e) => e.preventDefault()")
 
@@ -665,7 +666,14 @@ class PlayerPage:
         connected = state != PlayerState.DISCONNECTED
         if connected != self.was_connected:
             self.was_connected = connected
-            self.play_output_toggle.set_value("coil" if connected else "speaker")
+            self.show_play_output("coil" if connected else "speaker")
+        # the toggle shows where the playing (or paused) song is, a preview of parts doesn't count
+        active, _, _ = self.active_playback()
+        speaker = self.speaker
+        if speaker is not None and speaker.parts is None:
+            self.show_play_output("speaker")
+        elif speaker is None and active is not None:
+            self.show_play_output("coil")
         self.connect_button.set_text("Disconnect" if connected else "Connect")
         self.connect_button.props(f"icon={'link_off' if connected else 'link'}")
         self.port_select.set_enabled(not connected)
@@ -911,6 +919,45 @@ class PlayerPage:
         else:
             self.stop_speaker()
             self.play_on_coil(self.selected, start)
+        self.update()
+
+    def show_play_output(self, output: str):
+        """Shows the output on the toggle, without moving the song."""
+        self.play_output = output
+        self.play_output_toggle.set_value(output)
+
+    def set_play_output(self, output: str):
+        """Moves the playing (or paused) song to the output the toggle was changed to, keeping its position."""
+        if output == self.play_output:
+            return
+        active, position, playing = self.active_playback()
+        speaker = self.speaker
+        # a preview of parts stays on the speaker
+        if active is None or (speaker is not None and speaker.parts is not None):
+            self.play_output = output
+            return
+        if output == "coil":
+            if self.player.state == PlayerState.DISCONNECTED or self.player.reconnecting:
+                ui.notify("The coil is not connected", type="warning")
+                self.play_output_toggle.set_value(self.play_output)
+                return
+            self.play_output = output
+            self.stop_speaker()
+            if playing:
+                self.play_on_coil(active, position)
+            else:
+                self.release_all_keys()
+                self.player.pause_at(active, position)
+        else:
+            self.play_output = output
+            # the coil is shared, so it stops for the other tabs as well
+            self.player.stop()
+            if playing:
+                self.play_on_speaker(active, None, "", position)
+            else:
+                self.speaker = SpeakerPlayback(
+                    active, None, "", monotonic() - position, self.player.muted_version, paused_at=position
+                )
         self.update()
 
     def play_on_coil(self, song: Song, start: float):

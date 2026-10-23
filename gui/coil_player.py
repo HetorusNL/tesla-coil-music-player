@@ -313,6 +313,18 @@ class CoilPlayer:
         self.position = min(perf_counter() - self._play_origin, self.current_song.length)
         self.paused = True
 
+    def pause_at(self, song: Song, position: float):
+        """Holds the song paused at the position, playing resumes it from there."""
+        if self._sh is None:
+            raise RuntimeError("not connected to the tesla coil controller")
+        self.stop()
+        self.live_release_all()
+        self.current_song = song
+        self.position = min(max(position, 0.0), song.length)
+        self.notes_on = 0
+        self.notes_off = 0
+        self.paused = True
+
     def seek_paused(self, position: float):
         """Moves the position a paused song resumes from."""
         if self.paused and self.current_song is not None:
