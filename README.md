@@ -3,6 +3,25 @@
 Plays MIDI songs on a tesla coil. The `controller/` folder contains the PlatformIO firmware of the tesla coil
 controller, the `gui/` folder contains a NiceGUI web interface that sends the songs to the controller over serial.
 
+## Converting audio to MIDI
+
+```sh
+uv run --extra convert tesla-coil-convert song.mp3
+```
+
+Converts audio files (mp3, wav, flac, ogg, ...) into `.mid` files next to them. The instruments are first separated
+with [demucs](https://github.com/adefossez/demucs) into vocals, guitar, piano, other and bass, and each is
+transcribed into its own part with Spotify's [basic-pitch](https://github.com/spotify/basic-pitch) model. Together
+the parts can have more notes at once than the coil can play, select the ones you want in the web interface.
+
+- `--drums` also transcribes the drums (as pitched notes)
+- `--max-notes` keeps only the loudest notes when more play at once within a part
+- `--model htdemucs_ft` separates more cleanly, but only into vocals, bass and other
+- `--no-separate` skips the separation and transcribes everything into a single part, which is much faster
+
+The `convert` extra installs the CPU build of PyTorch, the web interface itself doesn't need it. The demucs model is
+downloaded on the first run. See `--help` for the other detection thresholds.
+
 ## Web interface
 
 ```sh
