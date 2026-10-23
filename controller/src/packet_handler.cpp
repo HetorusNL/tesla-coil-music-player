@@ -96,6 +96,12 @@ void PacketHandler::handle_packet() {
     case TYPE_MIDI_END:
         handle_result(midi_controller.end_stream(data, len));
         break;
+    case TYPE_CONFIG:
+        handle_result(CoilTimer::configure(data, len));
+        break;
+    case TYPE_PING:
+        handle_result(PHC::PACKET_HANDLE_RESULT::RESULT_OK);
+        break;
     case TYPE_RESET:
         handle_result(perform_reset());
         break;

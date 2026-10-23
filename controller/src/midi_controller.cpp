@@ -82,6 +82,7 @@ void MidiController::note_on(uint8_t* msg) {
             debugprint("delay: ");
             debugprint(midi_tones[i].delay);
             midi_tones[i].coil_timer = timer;
+            midi_tones[i].coil_timer->set_velocity(midi_tones[i].velocity);
             midi_tones[i].coil_timer->set_frequency(midi_frequency[midi_tones[i].note]);
             midi_tones[i].coil_timer->start();
             return;

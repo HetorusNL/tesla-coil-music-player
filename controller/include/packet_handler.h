@@ -40,6 +40,8 @@ private:
     static constexpr uint8_t TYPE_MIDI_START = 0x01;  // start of MIDI stream
     static constexpr uint8_t TYPE_MIDI_MSG = 0x02;    // MIDI message stream message
     static constexpr uint8_t TYPE_MIDI_END = 0x03;    // end of MIDI message stream
+    static constexpr uint8_t TYPE_CONFIG = 0x04;      // change a setting of the sparks
+    static constexpr uint8_t TYPE_PING = 0x05;        // only replies, to check the connection
     static constexpr uint8_t TYPE_RESET = 0xff;       // perform reset sequence
     // constants
     static constexpr uint8_t MAX_MSG_SIZE = 0x10;

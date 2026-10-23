@@ -6,6 +6,8 @@
 #include "timer_manager.h"
 #include <HardwareTimer.h>
 
+SparkConfig CoilTimer::spark_config;
+
 CoilTimer::CoilTimer(int id, Config* config)
     : id(id), config(config), _frequency(1), _velocity(0), active(false), spark_enabled(true), in_use(false) {
     // create the hardware timer with the timer typedef
@@ -97,23 +99,13 @@ CoilTimer* CoilTimer::set_frequency(double frequency) {
 }
 
 void CoilTimer::create_spark(uint16_t num_active_timers) {
-    // calculate the on duration here
-    uint16_t on_time = get_on_time();
-    uint16_t duration = on_time;
-    // take the number of active timers into account
-    double active_timer_factor = (0.5 + (double)num_active_timers / 2);
-    // base the active hardware_timer volume adjustment on the frequency
-    double vol_adjusted_factor = 1. + (active_timer_factor - 1);  // * (on_time[0]) / (on_time);
-    vol_adjusted_factor = 1.5;
-    duration = (uint16_t)((double)duration * VOLUME_MULTIPLIER / vol_adjusted_factor);
-    // reduce duration by velocity if velocity is low
-    duration *= (127 + _velocity / 2);
-    duration >>= 8;
-    // limit the min/max values of the duration
-    if (duration < MIN_ON_TIME)
-        duration = MIN_ON_TIME;
-    if (duration > MAX_ON_TIME)
-        duration = MAX_ON_TIME;
+    // the on-time of the frequency, scaled by the volume and (as much as configured) by the velocity of the note
+    const SparkConfig& config = spark_config;
+    float velocity_factor = 1.0f - config.velocity_sensitivity * (1.0f - _velocity / 127.0f);
+    float on_time = get_on_time() * config.volume * velocity_factor;
+    // limit the min/max values of the duration, and never beyond the absolute maximum
+    uint16_t max_on_time = min(config.max_on_time, SparkConfig::ABSOLUTE_MAX_ON_TIME);
+    uint16_t duration = (uint16_t)constrain(on_time, (float)config.min_on_time, (float)max_on_time);
     // apply the spark for duration (us) ON and then duration (us) OFF
     digitalWrite(LED_BUILTIN, HIGH);
     digitalWrite(COIL_PIN, HIGH);
@@ -121,6 +113,43 @@ void CoilTimer::create_spark(uint16_t num_active_timers) {
     digitalWrite(LED_BUILTIN, LOW);
     digitalWrite(COIL_PIN, LOW);
     delayMicroseconds(duration);
+}
+
+PHC::PACKET_HANDLE_RESULT CoilTimer::configure(uint8_t* data, uint8_t len) {
+    using PHR = PHC::PACKET_HANDLE_RESULT;
+    if (len != 4)
+        return PHR::RESULT_NOK;
+    uint8_t index = data[1];
+    uint16_t value = (uint16_t)data[2] << 8 | data[3];
+    SparkConfig& config = spark_config;
+    switch (data[0]) {
+    case SparkConfig::ON_TIME:
+        if (index >= SparkConfig::NUM_ON_TIMES)
+            return PHR::RESULT_NOK;
+        config.on_times[index] = value;
+        break;
+    case SparkConfig::MIN_ON_TIME:
+        if (value > SparkConfig::ABSOLUTE_MAX_ON_TIME)
+            return PHR::RESULT_NOK;
+        config.min_on_time = value;
+        break;
+    case SparkConfig::MAX_ON_TIME:
+        if (value > SparkConfig::ABSOLUTE_MAX_ON_TIME)
+            return PHR::RESULT_NOK;
+        config.max_on_time = value;
+        break;
+    case SparkConfig::VOLUME:
+        config.volume = value / 10000.0f;
+        break;
+    case SparkConfig::VELOCITY_SENSITIVITY:
+        if (value > 10000)
+            return PHR::RESULT_NOK;
+        config.velocity_sensitivity = value / 10000.0f;
+        break;
+    default:
+        return PHR::RESULT_NOK;
+    }
+    return PHR::RESULT_OK;
 }
 
 bool CoilTimer::request() {
