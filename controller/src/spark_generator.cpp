@@ -15,6 +15,8 @@ static constexpr int32_t IDLE_TICKS = 0x40000000;
 static constexpr float MIN_LEAD = 2.0f;
 // an armed spark that starts sooner than this (us) is left to the interrupt, which arms the spark after it
 static constexpr float REARM_MARGIN = 5.0f;
+// the duty-cycle budget holds the on-time of this long (us) at the maximum duty cycle
+static constexpr float DUTY_WINDOW = 10000.0f;
 
 CoilTimer** SparkGenerator::timers = nullptr;
 int SparkGenerator::num_timers = 0;
@@ -28,6 +30,12 @@ uint64_t SparkGenerator::armed_spark = 0;
 uint32_t SparkGenerator::armed_tick = 0;
 uint32_t SparkGenerator::armed_on_ticks = 0;
 uint32_t SparkGenerator::coil_free = 0;
+uint32_t SparkGenerator::duty_q16 = 0;
+uint64_t SparkGenerator::budget_cap_q16 = 0;
+uint64_t SparkGenerator::budget_q16 = 0;
+uint32_t SparkGenerator::budget_tick = 0;
+uint32_t SparkGenerator::min_on_ticks = 0;
+uint32_t SparkGenerator::scale_q16 = 1 << 16;
 
 extern "C" void TIM2_IRQHandler(void) {
 #ifdef SPARK_TEST
@@ -99,14 +107,45 @@ void SparkGenerator::begin(CoilTimer** timers, int num_timers) {
     __disable_irq();
     TIM2->CR1 = TIM_CR1_CEN;
     coil_free = now();
+    update_limits();
+    // start with a full budget
+    budget_q16 = budget_cap_q16;
+    budget_tick = now();
     arm_next();
     __enable_irq();
 }
 
 void SparkGenerator::reschedule() {
+    update_scale();
     // an armed spark that is about to start can't be moved safely anymore, the interrupt arms the next spark then
     if ((int32_t)(armed_tick - now()) > (int32_t)rearm_margin_ticks)
         arm_next();
+}
+
+void SparkGenerator::update_limits() {
+    const SparkConfig& config = CoilTimer::spark_config;
+    uint32_t now = SparkGenerator::now();
+    // keep the budget built up so far, but not beyond what the new limit holds
+    budget_q16 = budget_at(now);
+    budget_tick = now;
+    uint16_t max_duty = min(config.max_duty, SparkConfig::ABSOLUTE_MAX_DUTY);
+    duty_q16 = (uint32_t)max_duty * 65536 / 10000;
+    budget_cap_q16 = (uint64_t)us_to_ticks(DUTY_WINDOW) * duty_q16;
+    if (budget_q16 > budget_cap_q16)
+        budget_q16 = budget_cap_q16;
+    min_on_ticks = us_to_ticks(config.min_on_time);
+}
+
+void SparkGenerator::update_scale() {
+    // the share of the time the active timers want the coil on
+    float demand = 0.0f;
+    for (int i = 0; i < num_timers; i++) {
+        CoilTimer* timer = timers[i];
+        if (timer->active && timer->period)
+            demand += timer->on_ticks / (timer->period / 4294967296.0f);
+    }
+    float max_duty = duty_q16 / 65536.0f;
+    scale_q16 = demand > max_duty ? (uint32_t)(max_duty / demand * 65536.0f) : 1 << 16;
 }
 
 void SparkGenerator::isr() {
@@ -115,11 +154,18 @@ void SparkGenerator::isr() {
     __disable_irq();
     // the armed spark just started
     CoilTimer* timer = armed_timer;
-    if (timer) {
+    if (timer && armed_on_ticks) {
         coil_free = armed_tick + 1 + armed_on_ticks + min_off_ticks;
+        // the spark uses its on-time of the budget
+        uint64_t budget = budget_at(armed_tick);
+        uint64_t used = (uint64_t)armed_on_ticks << 16;
+        budget_q16 = budget > used ? budget - used : 0;
+        budget_tick = armed_tick;
 #ifdef SPARK_TEST
         SparkTest::log_spark(armed_tick, timer->id, armed_on_ticks);
 #endif
+    }
+    if (timer) {
         // the next spark of the timer, skipping the ones that it missed while the coil was busy, unless the timer
         // changed since it was armed
         if (timer->active && timer->next_spark == armed_spark) {
@@ -134,6 +180,9 @@ void SparkGenerator::isr() {
 
 void SparkGenerator::arm_next() {
     uint32_t now = SparkGenerator::now();
+    // the budget refilled until now, so budget_tick stays recent while the coil is idle
+    budget_q16 = budget_at(now);
+    budget_tick = now;
 
     // the timer whose spark is due first
     CoilTimer* next = nullptr;
@@ -157,10 +206,17 @@ void SparkGenerator::arm_next() {
 
     armed_timer = next;
     armed_spark = next ? next->next_spark : 0;
-    armed_on_ticks = next ? next->on_ticks : 0;
     armed_tick = now + delay;
+    armed_on_ticks = next ? next->on_ticks : 0;
+    // all sparks get shorter by the same factor when the timers together exceed the maximum duty cycle
+    uint32_t scaled = (uint32_t)(((uint64_t)armed_on_ticks * scale_q16) >> 16);
+    armed_on_ticks = scaled >= min_on_ticks ? scaled : min(armed_on_ticks, min_on_ticks);
+    // the spark gets at most the budget left when it starts, a spark shorter than the minimum on-time is skipped
+    uint32_t available = budget_at(armed_tick) >> 16;
+    if (armed_on_ticks > available)
+        armed_on_ticks = available >= min_on_ticks && available > 0 ? available : 0;
     // preload the pulse, TIM4 loads it when the compare triggers it
-    if (next) {
+    if (armed_on_ticks) {
         TIM4->CCR3 = 1;
         TIM4->ARR = armed_on_ticks;
     } else {

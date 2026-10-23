@@ -103,6 +103,11 @@ PHC::PACKET_HANDLE_RESULT CoilTimer::configure(uint8_t* data, uint8_t len) {
     case SparkConfig::VOLUME:
         config.volume = value / 10000.0f;
         break;
+    case SparkConfig::MAX_DUTY:
+        if (value > SparkConfig::ABSOLUTE_MAX_DUTY)
+            return PHR::RESULT_NOK;
+        config.max_duty = value;
+        break;
     case SparkConfig::VELOCITY_SENSITIVITY:
         if (value > 10000)
             return PHR::RESULT_NOK;
@@ -113,6 +118,10 @@ PHC::PACKET_HANDLE_RESULT CoilTimer::configure(uint8_t* data, uint8_t len) {
     }
     for (int i = 0; i < TimerManager::NUM_TIMERS; i++)
         TimerManager::timers[i]->update_on_ticks();
+    __disable_irq();
+    SparkGenerator::update_limits();
+    SparkGenerator::reschedule();
+    __enable_irq();
     return PHR::RESULT_OK;
 }
 

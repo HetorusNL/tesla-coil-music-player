@@ -18,8 +18,8 @@ def note_frequency(note: int) -> float:
     return 440 * 2 ** ((note - 69) / 12)
 
 
-def spark_on_time(frequency: float, velocity: int, config: SparkConfig) -> int:
-    """Mirrors CoilTimer::get_on_time and CoilTimer::create_spark: the on-time (us) of a single spark."""
+def spark_on_time(frequency: float, velocity: int, config: SparkConfig) -> float:
+    """Mirrors CoilTimer::get_on_time and CoilTimer::update_on_ticks: the on-time (us) of a single spark."""
     on_times = config.on_times
     freq = int(frequency)
     index = freq // 100
@@ -30,15 +30,28 @@ def spark_on_time(frequency: float, velocity: int, config: SparkConfig) -> int:
     velocity_factor = 1 - config.velocity_sensitivity * (1 - velocity / 127)
     on_time *= config.volume * velocity_factor
     max_on_time = min(config.max_on_time, ABSOLUTE_MAX_ON_TIME)
-    return int(min(max(on_time, config.min_on_time), max_on_time))
+    return min(max(on_time, config.min_on_time), max_on_time)
 
 
 def duty_cycle(notes: Iterable[tuple[int, int]], config: SparkConfig) -> float:
-    """The fraction of time the coil is on, when the (note, velocity) notes are playing."""
+    """The fraction of time the coil would be on without the duty cycle limit, when the (note, velocity) notes play."""
     return (
         sum(note_frequency(note) * spark_on_time(note_frequency(note), velocity, config) for note, velocity in notes)
         / 1e6
     )
+
+
+def limited_duty_cycle(notes: Iterable[tuple[int, int]], config: SparkConfig) -> float:
+    """Mirrors the SparkGenerator: the fraction of time the coil is on within the maximum duty cycle. Beyond it all
+    sparks get shorter by the same factor, but not below the min on-time, and the budget of on-time limits the rest.
+    """
+    sparks = [(note_frequency(note), spark_on_time(note_frequency(note), velocity, config)) for note, velocity in notes]
+    demand = sum(frequency * on_time for frequency, on_time in sparks) / 1e6
+    if demand <= config.max_duty:
+        return demand
+    scale = config.max_duty / demand
+    scaled = [(frequency, max(on_time * scale, min(on_time, config.min_on_time))) for frequency, on_time in sparks]
+    return min(sum(frequency * on_time for frequency, on_time in scaled) / 1e6, config.max_duty)
 
 
 @dataclass(frozen=True)
@@ -48,6 +61,9 @@ class MeterReading:
 
     def duty_cycle(self, config: SparkConfig) -> float:
         return duty_cycle(self.notes, config)
+
+    def limited_duty_cycle(self, config: SparkConfig) -> float:
+        return limited_duty_cycle(self.notes, config)
 
 
 class CoilModel:

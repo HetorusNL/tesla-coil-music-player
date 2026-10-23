@@ -37,6 +37,7 @@ SETTING_MIN_ON_TIME = 0x02
 SETTING_MAX_ON_TIME = 0x03
 SETTING_VOLUME = 0x04
 SETTING_VELOCITY_SENSITIVITY = 0x05
+SETTING_MAX_DUTY = 0x06
 NUM_ON_TIMES = 20
 FRACTION_SCALE = 10000
 DUMP_MAGIC = 0x4B525053
@@ -111,13 +112,16 @@ class Controller:
     def reset(self):
         self.request(TYPE_RESET)
 
-    def configure(self, on_time: int, min_on_time: int = 10, max_on_time: int = 100, volume: float = 1.0):
+    def configure(
+        self, on_time: int, min_on_time: int = 10, max_on_time: int = 100, volume: float = 1.0, max_duty: float = 0.15
+    ):
         for index in range(NUM_ON_TIMES):
             self._setting(SETTING_ON_TIME, index, on_time)
         self._setting(SETTING_MIN_ON_TIME, 0, min_on_time)
         self._setting(SETTING_MAX_ON_TIME, 0, max_on_time)
         self._setting(SETTING_VOLUME, 0, round(volume * FRACTION_SCALE))
         self._setting(SETTING_VELOCITY_SENSITIVITY, 0, 0)
+        self._setting(SETTING_MAX_DUTY, 0, round(max_duty * FRACTION_SCALE))
 
     def _setting(self, setting: int, index: int, value: int):
         self.request(TYPE_CONFIG, [setting, index, value >> 8, value & 0xFF])
@@ -292,6 +296,44 @@ def test_chord(controller: Controller, report: Report):
         check_note(report, log, timer_id, note)
 
 
+def test_duty_limit(controller: Controller, report: Report):
+    notes = [60, 64, 67, 72, 76, 79, 84, 88, 91]
+    print(f"duty cycle limit: chord of {len(notes)} notes, 50 us, at most 5%")
+    controller.configure(on_time=50, min_on_time=10, max_duty=0.05)
+    log = controller.play(notes, 0.5)
+    check_pulses(report, log)
+    if not log.pulses:
+        return
+    # the budget holds 10 ms of on-time at the limit, so any window can have that much more than the limit
+    window = log.ticks(10_000)
+    budget = 0.05 * window
+    worst = 0.0
+    start = 0
+    for end, pulse in enumerate(log.pulses):
+        while ticks_diff(pulse.rise, log.pulses[start].rise) > window:
+            start += 1
+        worst = max(worst, sum(p.width for p in log.pulses[start : end + 1]))
+    # the budget starts full, which adds its 10 ms of on-time to the average
+    span = ticks_diff(log.pulses[-1].fall, log.pulses[0].rise)
+    average = sum(p.width for p in log.pulses) / span
+    report.check(
+        "at most 5% on average",
+        average <= 0.05 + (0.05 * 10_000 + 50) / log.us(span),
+        f"{average:.2%} over {log.us(span) / 1000:.0f} ms",
+    )
+    report.check(
+        "at most the budget per 10 ms",
+        worst <= 2 * budget + log.ticks(50),
+        f"{log.us(worst):.0f} us in the busiest 10 ms (limit {log.us(2 * budget):.0f} us)",
+    )
+    shortened = [p for p in log.pulses if p.width < log.ticks(50) - TOLERANCE_TICKS]
+    report.check(
+        "shortened sparks not below the min on-time",
+        all(p.width >= log.ticks(10) - TOLERANCE_TICKS for p in log.pulses),
+        f"{len(shortened)} of {len(log.pulses)} sparks shortened, shortest {log.us(min(p.width for p in log.pulses)):.2f} us",
+    )
+
+
 def test_note_off(controller: Controller, report: Report):
     print("note off stops the sparks")
     controller.configure(on_time=50)
@@ -315,7 +357,8 @@ def main():
     controller = Controller(args.port)
     controller.request(TYPE_PING)
     report = Report()
-    for test in [test_single_note, test_fractional_on_time, test_max_on_time, test_chord, test_note_off]:
+    tests = [test_single_note, test_fractional_on_time, test_max_on_time, test_chord, test_duty_limit, test_note_off]
+    for test in tests:
         controller.reset()
         test(controller, report)
     controller.reset()

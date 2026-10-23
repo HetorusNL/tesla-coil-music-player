@@ -14,6 +14,7 @@ NUM_ON_TIMES = 20
 ABSOLUTE_MAX_ON_TIME = 200  # us, no setting can make a spark longer than this
 MAX_TABLE_ON_TIME = ABSOLUTE_MAX_ON_TIME  # us, the table holds the actual on-times at full volume
 MAX_VOLUME = 1.0
+ABSOLUTE_MAX_DUTY = 0.15  # no setting can let the coil be on more of the time than this
 
 DEFAULT_ON_TIMES = [80, 75, 70, 66, 62, 59, 57, 56, 55, 54, 53, 52, 51, 50, 50, 50, 50, 50, 50, 50]
 
@@ -30,6 +31,8 @@ class SparkConfig:
     volume: float = 1.0
     # how much a lower note velocity shortens the spark: 0 not at all, 1 a zero velocity gives no spark
     velocity_sensitivity: float = 0.0
+    # the share of the time the coil may be on, averaged over 10 ms: the sparks get shorter beyond it
+    max_duty: float = 0.1
 
     def errors(self) -> list[str]:
         errors: list[str] = []
@@ -43,6 +46,8 @@ class SparkConfig:
             errors.append(f"the volume must be between 0 and {MAX_VOLUME:.0%}")
         if not 0 <= self.velocity_sensitivity <= 1:
             errors.append("the velocity sensitivity must be between 0 and 100%")
+        if not 0 <= self.max_duty <= ABSOLUTE_MAX_DUTY:
+            errors.append(f"the max duty cycle must be between 0 and {ABSOLUTE_MAX_DUTY:.0%}")
         return errors
 
 

@@ -16,6 +16,12 @@ class CoilTimer;
 //
 // Only one spark is on the coil at a time: a spark that is due while the coil is busy waits until the coil has been
 // off for at least the minimum off-time.
+//
+// When the active timers together want the coil on for more than the maximum duty cycle, the on-times of all their
+// sparks are scaled down by the same factor (but not below the minimum on-time), so every note gets equally quieter.
+// On top of that, the sparks share a budget of on-time that refills at the maximum duty cycle and holds up to
+// DUTY_WINDOW of it: a spark gets at most the budget that is left, and is skipped when that's less than the minimum
+// on-time.
 class SparkGenerator {
 public:
     // configures the timers and the coil pin, the timers stay owned by the caller
@@ -23,6 +29,9 @@ public:
     // arms the spark that is due first again, after a timer started, stopped or changed
     // must be called with the interrupts disabled
     static void reschedule();
+    // takes over the maximum duty cycle and the minimum on-time of the spark config, reschedule() arms them
+    // must be called with the interrupts disabled
+    static void update_limits();
     // handles the compare interrupt of TIM2
     static void isr();
 
@@ -34,6 +43,12 @@ public:
 
 private:
     static void arm_next();
+    static void update_scale();
+    // the budget (ticks of on-time, with 16 fractional bits) at the tick, which can't be before budget_tick
+    static inline uint64_t budget_at(uint32_t tick) {
+        uint64_t budget = budget_q16 + (uint64_t)(tick - budget_tick) * duty_q16;
+        return budget < budget_cap_q16 ? budget : budget_cap_q16;
+    }
     static inline uint32_t us_to_ticks(float us) { return (uint32_t)(us * ticks_per_us() + 0.5f); }
 
 private:
@@ -53,4 +68,13 @@ private:
     static uint32_t armed_on_ticks;
     // the tick from which the coil may spark again
     static uint32_t coil_free;
+
+    // the duty cycle limit: the budget refills at duty_q16 (on-time per tick, with 16 fractional bits)
+    static uint32_t duty_q16;
+    static uint64_t budget_cap_q16;
+    static uint64_t budget_q16;
+    static uint32_t budget_tick;
+    static uint32_t min_on_ticks;
+    // the factor of the on-times of all sparks (with 16 fractional bits), to stay within the maximum duty cycle
+    static uint32_t scale_q16;
 };

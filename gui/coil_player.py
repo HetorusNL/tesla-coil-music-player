@@ -40,7 +40,8 @@ SETTING_MIN_ON_TIME = 0x02
 SETTING_MAX_ON_TIME = 0x03
 SETTING_VOLUME = 0x04
 SETTING_VELOCITY_SENSITIVITY = 0x05
-# the volume and velocity sensitivity are sent in 1/10000
+SETTING_MAX_DUTY = 0x06
+# the volume, velocity sensitivity and max duty cycle are sent in 1/10000
 FRACTION_SCALE = 10000
 # control values of the replies of the tesla coil controller
 STX = 0x02
@@ -450,6 +451,7 @@ class CoilPlayer:
             (SETTING_MAX_ON_TIME, 0, config.max_on_time),
             (SETTING_VOLUME, 0, round(config.volume * FRACTION_SCALE)),
             (SETTING_VELOCITY_SENSITIVITY, 0, round(config.velocity_sensitivity * FRACTION_SCALE)),
+            (SETTING_MAX_DUTY, 0, round(config.max_duty * FRACTION_SCALE)),
         ]
         return [(s, i, v) for s, i, v in settings if self._controller_settings.get((s, i)) != v]
 

@@ -25,6 +25,7 @@ from starlette.responses import Response
 from gui.coil_model import COIL_TIMERS, MeterReading, note_frequency, spark_on_time
 from gui.coil_player import CoilPlayer, Delivery, LogLine, PlayerState
 from gui.config import (
+    ABSOLUTE_MAX_DUTY,
     ABSOLUTE_MAX_ON_TIME,
     DEFAULT_ON_TIMES,
     MAX_TABLE_ON_TIME,
@@ -53,7 +54,6 @@ SPEAKER_START_DELAY = 0.1  # matches START_DELAY of the synth
 PART_COLORS = ["#4f8ef7", "#f2994a", "#27ae60", "#bb6bd9", "#eb5757", "#2bb3c0", "#f2c94c", "#e86fae", "#9b8f6b"]
 LOAD_BINS = 400  # the number of time slices of the coil load strip
 LOG_LINES = 1000  # the number of log lines shown
-POWER_FULL_SCALE = 0.05  # the duty cycle of a full power meter
 PEAK_HOLD = 1.5  # seconds the peak of the power meter holds before it falls back
 SETTINGS_DELAY = 0.5  # seconds without changes before a changed setting is applied
 SOFT_VELOCITY = 64  # the velocity of the dashed curve of the spark chart
@@ -89,6 +89,7 @@ CSS = """
 .meter-fill { height: 100%; width: 0; background: linear-gradient(90deg, #6fcf97 0%, #f2c94c 60%, #eb5757 100%);
               background-size: 96px 100%; transition: width 0.1s linear; }
 .meter-peak { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: white; opacity: 0; }
+.meter-power.limited { box-shadow: 0 0 0 1px #eb5757; }
 """
 
 
@@ -242,13 +243,14 @@ class PlayerPage:
         with ui.row().classes("items-center gap-2 no-wrap max-sm:hidden") as meter:
             meter.tooltip(
                 f"Notes on the {COIL_TIMERS} coil timers (red: all timers in use, extra notes are dropped) and the "
-                f"estimated power as duty cycle of the coil, full scale is {POWER_FULL_SCALE:.0%}"
+                "estimated power as duty cycle of the coil, full scale is the max duty cycle of the coil settings. "
+                "A red outline means the notes want more and the sparks are shortened to stay within it"
             )
             self.meter_source = ui.label().classes("text-caption opacity-70 w-12 text-right")
             with ui.element("div").classes("meter-leds"):
                 self.meter_leds = [ui.element("div").classes("meter-led") for _ in range(COIL_TIMERS)]
             self.meter_timers_label = ui.label().classes("text-caption w-14")
-            with ui.element("div").classes("meter-power"):
+            with ui.element("div").classes("meter-power") as self.meter_power:
                 self.meter_fill = ui.element("div").classes("meter-fill")
                 self.meter_peak = ui.element("div").classes("meter-peak")
             self.meter_power_label = ui.label().classes("text-caption w-10")
@@ -266,14 +268,17 @@ class PlayerPage:
             ui.label(
                 "The on-time of a spark is the on-time of its frequency band in the table, times the volume, "
                 "shortened for lower note velocities as far as the velocity sensitivity goes, and limited to the "
-                f"min and max on-time (never beyond {ABSOLUTE_MAX_ON_TIME} µs). Changes apply on enter or when "
-                "leaving the field, and are sent to the coil right away."
+                f"min and max on-time (never beyond {ABSOLUTE_MAX_ON_TIME} µs). When the sparks together exceed the "
+                "max duty cycle (the share of the time the coil is on, averaged over 10 ms, never beyond "
+                f"{ABSOLUTE_MAX_DUTY:.0%}), they get shorter, and a spark below the min on-time is left out. Changes "
+                "apply on enter or when leaving the field, and are sent to the coil right away."
             ).classes("text-caption text-grey")
             with ui.row().classes("items-center gap-4"):
                 self.volume_input = self.setting_input("Volume (%)", 0, MAX_VOLUME * 100, 1)
                 self.velocity_input = self.setting_input("Velocity sensitivity (%)", 0, 100, 1)
                 self.min_on_time_input = self.setting_input("Min on-time (µs)", 0, ABSOLUTE_MAX_ON_TIME, 1)
                 self.max_on_time_input = self.setting_input("Max on-time (µs)", 0, ABSOLUTE_MAX_ON_TIME, 1)
+                self.max_duty_input = self.setting_input("Max duty cycle (%)", 0, ABSOLUTE_MAX_DUTY * 100, 0.5)
                 ui.button("Defaults", icon="settings_backup_restore", on_click=self.reset_settings).props("outline")
             self.spark_summary = ui.label().classes("text-caption")
             # drawn by spark_chart.js, dragging a point changes the on-time of its band in the table
@@ -313,11 +318,12 @@ class PlayerPage:
         self.velocity_input.set_value(round(config.velocity_sensitivity * 100))
         self.min_on_time_input.set_value(config.min_on_time)
         self.max_on_time_input.set_value(config.max_on_time)
+        self.max_duty_input.set_value(round(config.max_duty * 100, 2))
         for number, on_time in zip(self.on_time_inputs, config.on_times):
             number.set_value(on_time)
         # the range of the sparks over all MIDI notes at full velocity, the table does nothing while it's one value
         on_times = [spark_on_time(note_frequency(note), 127, config) for note in range(128)]
-        summary = f"Spark on-times of all notes at full velocity: {min(on_times)}–{max(on_times)} µs"
+        summary = f"Spark on-times of all notes at full velocity: {min(on_times):.3g}–{max(on_times):.3g} µs"
         if max(on_times) == config.min_on_time:
             summary += ", all at the min on-time: raise the volume to make the table count"
         self.spark_summary.set_text(summary)
@@ -348,18 +354,25 @@ class PlayerPage:
 
     def settings_from_inputs(self) -> SparkConfig | None:
         """The settings as filled in, None when a field is empty."""
-        inputs = [self.volume_input, self.velocity_input, self.min_on_time_input, self.max_on_time_input]
+        inputs = [
+            self.volume_input,
+            self.velocity_input,
+            self.min_on_time_input,
+            self.max_on_time_input,
+            self.max_duty_input,
+        ]
         values = [number.value for number in inputs + self.on_time_inputs]
         numbers = [value for value in values if value is not None]
         if len(numbers) != len(values):
             return None
-        volume, velocity_sensitivity, min_on_time, max_on_time, *on_times = numbers
+        volume, velocity_sensitivity, min_on_time, max_on_time, max_duty, *on_times = numbers
         return SparkConfig(
             on_times=[int(on_time) for on_time in on_times],
             min_on_time=int(min_on_time),
             max_on_time=int(max_on_time),
             volume=round(volume / 100, 4),
             velocity_sensitivity=round(velocity_sensitivity / 100, 4),
+            max_duty=round(max_duty / 100, 4),
         )
 
     async def reset_settings(self):
@@ -759,13 +772,25 @@ class PlayerPage:
         else:
             reading = self.player.coil_model.reading()
             source = "coil"
-        duty = reading.duty_cycle(self.player.spark_config)
+        config = self.player.spark_config
+        demand = reading.duty_cycle(config)
+        duty = reading.limited_duty_cycle(config)
+        limited = demand > duty
         now = monotonic()
         if duty >= self.meter_peak_value or now - self.meter_peak_time > PEAK_HOLD:
             self.meter_peak_value = duty
             self.meter_peak_time = now
 
-        state = (source, len(reading.notes), reading.dropped, round(duty, 4), round(self.meter_peak_value, 4))
+        full_scale = config.max_duty
+        state = (
+            source,
+            len(reading.notes),
+            reading.dropped,
+            round(duty, 4),
+            round(demand, 4),
+            round(self.meter_peak_value, 4),
+            full_scale,
+        )
         if state == self.meter_state:
             return
         self.meter_state = state
@@ -776,11 +801,18 @@ class PlayerPage:
             led.classes(replace=f"meter-led {'on' if idx < len(reading.notes) else ''} {level}")
         dropped = f" +{reading.dropped}" if reading.dropped else ""
         self.meter_timers_label.set_text(f"{len(reading.notes)}/{COIL_TIMERS}{dropped}")
-        fill = min(duty / POWER_FULL_SCALE, 1.0)
-        peak = min(self.meter_peak_value / POWER_FULL_SCALE, 1.0)
+        fill = min(duty / full_scale, 1.0) if full_scale else 0.0
+        peak = min(self.meter_peak_value / full_scale, 1.0) if full_scale else 0.0
         self.meter_fill.style(f"width: {fill * 100:.1f}%")
         self.meter_peak.style(f"left: calc({peak * 100:.1f}% - 2px); opacity: {1 if peak else 0}")
         self.meter_power_label.set_text(f"{duty:.1%}")
+        # the notes want more than the max duty cycle, so the sparks get shorter
+        if limited:
+            self.meter_power.classes(add="limited")
+            self.meter_power_label.classes(add="text-red-4")
+        else:
+            self.meter_power.classes(remove="limited")
+            self.meter_power_label.classes(remove="text-red-4")
 
     @staticmethod
     def simulate_coil(song: Song, enabled: set[PartKey], position: float) -> MeterReading:
