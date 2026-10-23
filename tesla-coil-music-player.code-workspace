@@ -12,6 +12,10 @@
     "files.insertFinalNewline": true,
     "files.trimFinalNewlines": true,
     "python.analysis.typeCheckingMode": "strict",
+    // mido, basic-pitch and demucs have no type information, their results are typed where they're used
+    "python.analysis.diagnosticSeverityOverrides": {
+      "reportMissingTypeStubs": "none",
+    },
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
     "xml.format.maxLineWidth": 150,

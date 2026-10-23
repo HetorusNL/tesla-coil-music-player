@@ -47,8 +47,9 @@ def main():
             except Exception as e:
                 player.log(f"could not connect to {args.serial_port}: {e}")
 
-    app.on_startup(auto_connect)
-    ui.run(
+    # nicegui types some of its handlers and containers without their element types
+    app.on_startup(auto_connect)  # pyright: ignore[reportUnknownMemberType]
+    ui.run(  # pyright: ignore[reportUnknownMemberType]
         host=args.host,
         port=args.port,
         title="Tesla Coil Music Player",

@@ -12,8 +12,13 @@ import sys
 import tempfile
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import mido
+
+if TYPE_CHECKING:
+    # only exists in the type information of demucs in typings/
+    from demucs.api import ProgressInfo
 
 TICKS_PER_BEAT = 480
 TEMPO_BPM = 120
@@ -32,11 +37,12 @@ type Note = tuple[float, float, int, float]
 
 def separate(path: Path, model_name: str, out_dir: Path) -> dict[str, Path]:
     # import here so --help and --no-separate work without loading PyTorch
+    import numpy
     import soundfile
     from demucs.api import Separator
 
     # the progress bar of demucs shows float rounding errors, draw our own from its progress callbacks
-    def show_progress(info: dict):
+    def show_progress(info: "ProgressInfo"):
         if info["state"] != "end":
             return
         length = info["audio_length"]
@@ -54,7 +60,7 @@ def separate(path: Path, model_name: str, out_dir: Path) -> dict[str, Path]:
     stem_paths: dict[str, Path] = {}
     for name, wav in stems.items():
         stem_paths[name] = out_dir / f"{name}.wav"
-        soundfile.write(stem_paths[name], wav.numpy().T, separator.samplerate)
+        soundfile.write(stem_paths[name], numpy.asarray(wav, dtype=numpy.float32).T, separator.samplerate)
     return stem_paths
 
 

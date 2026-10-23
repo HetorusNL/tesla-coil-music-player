@@ -25,10 +25,10 @@ from gui.song import DRUM_CHANNEL, PartKey, Song
 STATIC_DIR = Path(__file__).parent / "static"
 
 # laptop keyboard layout like LMMS: the bottom two rows play the lower octave, the top two rows the upper octave
-LOWER_ROW_KEYS = ["KeyZ", "KeyS", "KeyX", "KeyD", "KeyC", "KeyV", "KeyG", "KeyB", "KeyH", "KeyN", "KeyJ", "KeyM"]
-LOWER_ROW_KEYS += ["Comma", "KeyL", "Period", "Semicolon", "Slash"]
-UPPER_ROW_KEYS = ["KeyQ", "Digit2", "KeyW", "Digit3", "KeyE", "KeyR", "Digit5", "KeyT", "Digit6", "KeyY", "Digit7"]
-UPPER_ROW_KEYS += ["KeyU", "KeyI", "Digit9", "KeyO", "Digit0", "KeyP"]
+LOWER_ROW_KEYS = "KeyZ KeyS KeyX KeyD KeyC KeyV KeyG KeyB KeyH KeyN KeyJ KeyM Comma KeyL Period Semicolon Slash".split()
+UPPER_ROW_KEYS = (
+    "KeyQ Digit2 KeyW Digit3 KeyE KeyR Digit5 KeyT Digit6 KeyY Digit7 KeyU KeyI Digit9 KeyO Digit0 KeyP".split()
+)
 KEY_OFFSETS = {code: idx for idx, code in enumerate(LOWER_ROW_KEYS)} | {
     code: 12 + idx for idx, code in enumerate(UPPER_ROW_KEYS)
 }
@@ -135,7 +135,8 @@ class PlayerPage:
         # release all keys when the window loses focus, as the keyup events are lost then
         ui.on("window_blur", self.release_all_keys)
         ui.run_javascript("window.addEventListener('blur', () => emitEvent('window_blur'))")
-        ui.context.client.on_disconnect(self.release_all_keys)
+        # nicegui types some of its handlers and containers without their element types
+        ui.context.client.on_disconnect(self.release_all_keys)  # pyright: ignore[reportUnknownMemberType]
         ui.timer(0.2, self.update)
         ui.timer(0.1, self.update_meter)
         self.update_meter()
@@ -496,9 +497,9 @@ class PlayerPage:
         for line in [line for line in lines if self.show_debug or not line.debug][-LOG_LINES:]:
             self.log.push(line.text)
 
-    def toggle_debug(self, e: events.ValueChangeEventArguments):
+    def toggle_debug(self, e: events.ValueChangeEventArguments[bool | None]):
         # show the history again, with or without the debug messages
-        self.show_debug = e.value
+        self.show_debug = bool(e.value)
         self.log.clear()
         self.push_log_lines(self.player.log_since(0))
 
@@ -522,12 +523,12 @@ class PlayerPage:
             return
         if song.path != self.roll_song:
             self.roll_song = song.path
-            notes = [
+            notes: list[list[float]] = [
                 [round(span.start, 3), round(span.end - span.start, 3), span.note, song.part_order.index(span.part)]
                 for span in song.spans
             ]
             pitches = [span.note for span in song.spans] or [60]
-            data = {
+            data: dict[str, object] = {
                 "length": song.length,
                 "low": min(pitches) - 1,
                 "high": max(pitches) + 1,
@@ -568,7 +569,7 @@ class PlayerPage:
         ports = self.list_ports()
         if self.port_select.value and self.port_select.value not in ports:
             ports.append(self.port_select.value)
-        self.port_select.set_options(ports, value=self.port_select.value)
+        self.port_select.set_options(ports, value=self.port_select.value)  # pyright: ignore[reportUnknownMemberType]
 
     async def toggle_connection(self):
         try:
@@ -583,7 +584,7 @@ class PlayerPage:
             ui.notify(f"Connection failed: {e}", type="negative")
         self.update()
 
-    async def reset(self):
+    async def reset(self) -> None:
         await run.io_bound(self.player.reset)
         self.update()
 
@@ -749,7 +750,7 @@ def setup(player: CoilPlayer, default_port: str, password: str | None):
         PlayerPage(player, default_port, logout=password is not None)
 
     # make sure the coil goes silent when the application stops
-    app.on_shutdown(player.disconnect)
+    app.on_shutdown(player.disconnect)  # pyright: ignore[reportUnknownMemberType]
 
     if password is None:
         return
@@ -757,8 +758,8 @@ def setup(player: CoilPlayer, default_port: str, password: str | None):
     class AuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
             path = request.url.path
-            if not app.storage.user.get("authenticated", False):
-                if path in Client.page_routes.values() and path != "/login":
+            if not app.storage.user.get("authenticated", False):  # pyright: ignore[reportUnknownMemberType]
+                if path in Client.page_routes.values() and path != "/login":  # pyright: ignore[reportUnknownMemberType]
                     return RedirectResponse(f"/login?redirect_to={path}")
             return await call_next(request)
 
@@ -777,7 +778,7 @@ def setup(player: CoilPlayer, default_port: str, password: str | None):
             else:
                 ui.notify("Wrong password", type="negative")
 
-        if app.storage.user.get("authenticated", False):
+        if app.storage.user.get("authenticated", False):  # pyright: ignore[reportUnknownMemberType]
             ui.navigate.to(redirect_to)
             return
         with ui.card().classes("absolute-center items-center"):

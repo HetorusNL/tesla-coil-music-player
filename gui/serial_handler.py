@@ -8,7 +8,7 @@ import serial
 
 
 class SerialHandler:
-    def __init__(self, port, baudrate=921600):
+    def __init__(self, port: str, baudrate: int = 921600):
         self.port = serial.Serial()
         self.port.port = port
         self.port.baudrate = baudrate
@@ -23,17 +23,17 @@ class SerialHandler:
         self.port.close()
         return not self.port.is_open
 
-    def write(self, msg):
+    def write(self, msg: bytes | bytearray):
         self.port.write(msg)
 
-    def write_msg(self, msg):
+    def write_msg(self, msg: list[int]):
         self.port.write(bytearray([0x02, self.sequence_number, *msg, 0x03]))
         self.sequence_number = (self.sequence_number + 1) % 256
 
-    def read(self, num_bytes=256):
+    def read(self, num_bytes: int = 256) -> bytes:
         return self.port.read(num_bytes)
 
-    def read_msg(self, num_bytes=256):
+    def read_msg(self, num_bytes: int = 256) -> tuple[bool, list[int]]:
         msg = self.read(num_bytes)
         # TODO: temporary sequence number mismatch handling
         # change to retransmitting the broken message (with sequence number)
