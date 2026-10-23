@@ -106,13 +106,16 @@ void CoilTimer::create_spark(uint16_t num_active_timers) {
     // limit the min/max values of the duration, and never beyond the absolute maximum
     uint16_t max_on_time = min(config.max_on_time, SparkConfig::ABSOLUTE_MAX_ON_TIME);
     uint16_t duration = (uint16_t)constrain(on_time, (float)config.min_on_time, (float)max_on_time);
-    // apply the spark for duration (us) ON and then duration (us) OFF
+    // even a zero delay pulses the coil pin, so skip the spark entirely
+    if (duration == 0)
+        return;
+    // apply the spark for duration (us) ON and then duration (us) OFF, but at least the minimum off-time
     digitalWrite(LED_BUILTIN, HIGH);
     digitalWrite(COIL_PIN, HIGH);
     delayMicroseconds(duration);
-    digitalWrite(LED_BUILTIN, LOW);
     digitalWrite(COIL_PIN, LOW);
-    delayMicroseconds(duration);
+    digitalWrite(LED_BUILTIN, LOW);
+    delayMicroseconds(max(duration, SparkConfig::MIN_OFF_TIME));
 }
 
 PHC::PACKET_HANDLE_RESULT CoilTimer::configure(uint8_t* data, uint8_t len) {
