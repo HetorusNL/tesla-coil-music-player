@@ -681,10 +681,19 @@ class PlayerPage:
                 self.play_on_speaker(speaker.song, None, speaker.label, speaker.position)
                 speaker = self.speaker
 
-        # show the speaker playback of this tab, otherwise the coil playback, otherwise the selected song
+        # show the selected song, which is the playing (or paused) one until another song gets selected: the play
+        # button then plays that one, and selecting the playing one again shows it again
         active, position, playing = self.active_playback()
-        song = active or self.selected
-        if speaker is not None:
+        browsing = self.selected is not None and (active is None or self.selected.path != active.path)
+        song = self.selected if browsing else active
+        if browsing and self.selected is not None:
+            self.song_title.set_text(self.selected.name)
+            where = "speaker" if speaker is not None else "coil"
+            doing = "Playing" if playing else "Paused"
+            self.notes_label.set_text(f"{doing} on {where}: {active.name}" if active is not None else "")
+            enabled = self.enabled_parts(self.selected)
+            position = 0.0
+        elif speaker is not None:
             doing = "Previewing" if speaker.parts is not None else "Playing" if playing else "Paused"
             label = f" · {speaker.label}" if speaker.parts is not None else ""
             self.song_title.set_text(f"{doing} on speaker: {speaker.song.name}{label}")
@@ -695,19 +704,17 @@ class PlayerPage:
             self.notes_label.set_text(f"notes on: {player.notes_on} · notes off: {player.notes_off}")
             enabled = self.enabled_parts(active)
         else:
-            self.song_title.set_text(song.name if song else "No song selected")
+            self.song_title.set_text("No song selected")
             self.notes_label.set_text("")
-            enabled = self.enabled_parts(song) if song else set[PartKey]()
+            enabled = set[PartKey]()
         self.show_progress(song, position)
         self.update_roll(song, enabled)
 
-        # the play button pauses what's playing, unless another song is selected: then it plays that one
-        starts_selected = self.selected is not None and (active is None or self.selected.path != active.path)
         can_start = self.selected is not None and (self.play_output == "speaker" or connected)
-        self.play_button.props(f"icon={'pause' if playing and not starts_selected else 'play_arrow'}")
-        self.play_button.set_enabled(can_start if starts_selected else active is not None)
+        self.play_button.props(f"icon={'pause' if playing and not browsing else 'play_arrow'}")
+        self.play_button.set_enabled(can_start if browsing else active is not None)
         self.stop_button.set_enabled(active is not None)
-        self.restart_button.set_enabled(active is not None)
+        self.restart_button.set_enabled(self.play_button.enabled if browsing else active is not None)
         self.bar_title.set_text(song.name if song else "")
 
         if self.output != "speaker" and state not in [PlayerState.IDLE, PlayerState.PAUSED]:
@@ -955,13 +962,15 @@ class PlayerPage:
         self.seek_to(float(e.args) / SLIDER_STEPS)
 
     def seek_to(self, fraction: float):
-        # seek within the playing or paused song (staying paused), otherwise start the selected song from there
+        # seek within the playing or paused song (staying paused), or start another selected song from there
         fraction = min(max(fraction, 0.0), 1.0)
         active, _, playing = self.active_playback()
         speaker = self.speaker
-        if active is None:
-            if self.selected is not None and self.play_button.enabled:
+        if self.selected is not None and (active is None or self.selected.path != active.path):
+            if self.play_button.enabled:
                 self.play(fraction * self.selected.length)
+        elif active is None:
+            return
         elif speaker is not None and not playing:
             speaker.paused_at = fraction * speaker.song.length
         elif speaker is not None:
