@@ -12,7 +12,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
-from typing import cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse
@@ -56,6 +57,8 @@ POWER_FULL_SCALE = 0.05  # the duty cycle of a full power meter
 PEAK_HOLD = 1.5  # seconds the peak of the power meter holds before it falls back
 SETTINGS_DELAY = 0.5  # seconds without changes before a changed setting is applied
 SOFT_VELOCITY = 64  # the velocity of the dashed curve of the spark chart
+SLIDER_STEPS = 1000  # the resolution of the position slider of the player bar
+SLIDER_TOUCH_TIMEOUT = 1.0  # seconds after releasing the slider its change still seeks
 # the pages of the sidebar: name, label and icon
 PAGES = [
     ("player", "Player", "music_note"),
@@ -106,9 +109,12 @@ class SpeakerPlayback:
     label: str
     origin: float  # monotonic time of the start of the song
     muted_version: int
+    paused_at: float | None = None  # the position it's paused at
 
     @property
     def position(self) -> float:
+        if self.paused_at is not None:
+            return self.paused_at
         return min(max(monotonic() - self.origin, 0.0), self.song.length)
 
 
@@ -161,11 +167,18 @@ class PlayerPage:
                 ui.switch("Debug messages (packets to and from the controller)", on_change=self.toggle_debug)
                 self.log = ui.log(max_lines=LOG_LINES).classes("w-full h-[70vh]")
         self.show_page(self.current_page)
+        self.build_player_bar()
 
         ui.keyboard(on_key=self.on_key, ignore=["input", "select", "textarea"])
         # release all keys when the window loses focus, as the keyup events are lost then
         ui.on("window_blur", self.release_all_keys)
         ui.run_javascript("window.addEventListener('blur', () => emitEvent('window_blur'))")
+        # the space bar toggles play / pause, so it shouldn't scroll the page as well (but still type in fields)
+        ui.run_javascript(
+            "window.addEventListener('keydown', (e) => { const focus = document.activeElement; "
+            "if (e.code === 'Space' && !(focus && ['INPUT', 'SELECT', 'TEXTAREA'].includes(focus.tagName))) "
+            "e.preventDefault(); })"
+        )
         # nicegui types some of its handlers and containers without their element types
         ui.context.client.on_disconnect(self.release_all_keys)  # pyright: ignore[reportUnknownMemberType]
         ui.timer(0.2, self.update)
@@ -462,17 +475,43 @@ class PlayerPage:
                 "emit((e.clientX - r.left) / r.width) }",
             )
             with ui.row().classes("w-full justify-between text-caption"):
-                self.time_label = ui.label()
                 self.load_label = ui.label()
                 self.notes_label = ui.label()
-            with ui.row().classes("items-center"):
-                self.play_button = ui.button("Play", icon="play_arrow", on_click=self.play)
-                self.stop_button = ui.button("Stop", icon="stop", on_click=self.stop).props("color=negative")
+
+    def build_player_bar(self):
+        # like a music app: the controls of the playing (or selected) song at the bottom of every page
+        with ui.footer().classes("py-1"):
+            with ui.row().classes("w-full items-center no-wrap gap-2"):
+                self.bar_title = ui.label().classes("text-sm font-medium truncate w-56 max-md:hidden")
+                self.restart_button = self.bar_button("skip_previous", "From the start", self.restart)
+                self.play_button = self.bar_button("play_arrow", "Play / pause (space)", self.toggle_play)
+                self.play_button.props("size=lg")
+                self.stop_button = self.bar_button("stop", "Stop", self.stop)
+                self.position_label = ui.label().classes("text-caption w-10 text-right")
+                self.position_slider = ui.slider(min=0, max=SLIDER_STEPS, value=0).props("dense color=white")
+                self.position_slider.classes("flex-1")
+                # the slider follows the song, so only seek on a change right after the user pressed or dragged it,
+                # and don't move it under the pointer meanwhile
+                self.position_slider.on("change", self.slider_released)
+                self.position_slider.on("pointerdown", lambda: self.slider_touched(True))
+                self.position_slider.on("pointerup", lambda: self.slider_touched(False))
+                self.position_slider.on("pan", lambda e: self.slider_touched(e.args == "start"))
+                self.slider_pressed = False
+                self.slider_touch_time = 0.0
+                self.length_label = ui.label().classes("text-caption w-10")
                 self.play_output_toggle = ui.toggle(
                     {"coil": "Coil", "speaker": "Speaker"},
                     value=self.play_output,
                     on_change=lambda e: setattr(self, "play_output", e.value),
-                )
+                ).props("dense no-caps text-color=white toggle-color=white toggle-text-color=primary")
+                self.play_output_toggle.on("mousedown", js_handler="(e) => e.preventDefault()")
+
+    @staticmethod
+    def bar_button(icon: str, tooltip: str, handler: Callable[[], Any]) -> ui.button:
+        button = ui.button(icon=icon, on_click=handler).props("flat round color=white").tooltip(tooltip)
+        # don't take the focus, otherwise the space bar would press the button as well as toggle play / pause
+        button.on("mousedown", js_handler="(e) => e.preventDefault()")
+        return button
 
     def build_parts(self):
         with ui.card().classes("w-full"):
@@ -509,9 +548,7 @@ class PlayerPage:
 
     def render_song_list(self):
         query = (self.song_filter.value or "").lower()
-        playing = self.player.current_song if self.player.state == PlayerState.PLAYING else None
-        if self.speaker is not None:
-            playing = self.speaker.song
+        playing = self.active_playback()[0]
         folders, songs = self.player.list_folder(self.folder)
         home = Path.home()
         self.folder_label.set_text(
@@ -611,6 +648,7 @@ class PlayerPage:
                 PlayerState.DISCONNECTED: "disconnected",
                 PlayerState.IDLE: f"connected · {player.port_name}",
                 PlayerState.PLAYING: "playing",
+                PlayerState.PAUSED: "paused",
                 PlayerState.RECONNECTING: f"reconnecting · {player.port_name}",
             }[status]
         )
@@ -620,6 +658,7 @@ class PlayerPage:
                 PlayerState.DISCONNECTED: "grey",
                 PlayerState.IDLE: "positive",
                 PlayerState.PLAYING: "orange",
+                PlayerState.PAUSED: "blue-grey",
                 PlayerState.RECONNECTING: "negative",
             }[status]
         )
@@ -634,50 +673,51 @@ class PlayerPage:
 
         # the speaker playback of this tab ends with the song, and follows the muted parts
         speaker = self.speaker
-        if speaker is not None and speaker.position >= speaker.song.length:
-            self.stop_speaker()
-            speaker = None
-        if speaker is not None and speaker.parts is None and speaker.muted_version != player.muted_version:
-            self.play_on_speaker(speaker.song, None, speaker.label, speaker.position)
-            speaker = self.speaker
+        if speaker is not None and speaker.paused_at is None:
+            if speaker.position >= speaker.song.length:
+                self.stop_speaker()
+                speaker = None
+            elif speaker.parts is None and speaker.muted_version != player.muted_version:
+                self.play_on_speaker(speaker.song, None, speaker.label, speaker.position)
+                speaker = self.speaker
 
         # show the speaker playback of this tab, otherwise the coil playback, otherwise the selected song
-        song = player.current_song if state == PlayerState.PLAYING else self.selected
+        active, position, playing = self.active_playback()
+        song = active or self.selected
         if speaker is not None:
-            song = speaker.song
-            if speaker.parts is None:
-                self.song_title.set_text(f"Playing on speaker: {song.name}")
-            else:
-                self.song_title.set_text(f"Previewing on speaker: {song.name} · {speaker.label}")
-            self.show_progress(song, speaker.position)
+            doing = "Previewing" if speaker.parts is not None else "Playing" if playing else "Paused"
+            label = f" · {speaker.label}" if speaker.parts is not None else ""
+            self.song_title.set_text(f"{doing} on speaker: {speaker.song.name}{label}")
             self.notes_label.set_text("")
-            enabled = set(speaker.parts) if speaker.parts is not None else self.enabled_parts(song)
-        elif state == PlayerState.PLAYING and song is not None:
-            self.song_title.set_text(f"Playing on coil: {song.name}")
-            self.show_progress(song, player.position)
+            enabled = set(speaker.parts) if speaker.parts is not None else self.enabled_parts(speaker.song)
+        elif active is not None:
+            self.song_title.set_text(f"{'Playing' if playing else 'Paused'} on coil: {active.name}")
             self.notes_label.set_text(f"notes on: {player.notes_on} · notes off: {player.notes_off}")
-            enabled = self.enabled_parts(song)
+            enabled = self.enabled_parts(active)
         else:
             self.song_title.set_text(song.name if song else "No song selected")
-            self.set_roll_position(0.0)
-            self.time_label.set_text(f"0:00 / {format_time(song.length)}" if song else "")
             self.notes_label.set_text("")
             enabled = self.enabled_parts(song) if song else set[PartKey]()
+        self.show_progress(song, position)
         self.update_roll(song, enabled)
-        can_play = self.play_output == "speaker" or connected
-        self.play_button.set_enabled(can_play and self.selected is not None)
-        self.stop_button.set_enabled(speaker is not None or state == PlayerState.PLAYING)
 
-        if self.output != "speaker" and state != PlayerState.IDLE:
+        # the play button pauses what's playing, unless another song is selected: then it plays that one
+        starts_selected = self.selected is not None and (active is None or self.selected.path != active.path)
+        can_start = self.selected is not None and (self.play_output == "speaker" or connected)
+        self.play_button.props(f"icon={'pause' if playing and not starts_selected else 'play_arrow'}")
+        self.play_button.set_enabled(can_start if starts_selected else active is not None)
+        self.stop_button.set_enabled(active is not None)
+        self.restart_button.set_enabled(active is not None)
+        self.bar_title.set_text(song.name if song else "")
+
+        if self.output != "speaker" and state not in [PlayerState.IDLE, PlayerState.PAUSED]:
             reason = "while a song is playing" if state == PlayerState.PLAYING else "until connected"
             self.keyboard_hint.set_text(f"The coil doesn't play keyboard notes {reason}")
         else:
             self.keyboard_hint.set_text("Laptop keys: Z/S rows play the lower octave, Q/number rows the upper octave")
 
         # only rebuild the lists when something changed, so they don't flicker
-        playing_path = player.current_song.path if player.current_song and state == PlayerState.PLAYING else None
-        if speaker is not None:
-            playing_path = speaker.song.path
+        playing_path = active.path if active is not None else None
         selected_path = self.selected.path if self.selected else None
         song_list_state = (player.songs_version, self.folder, selected_path, playing_path)
         if song_list_state != self.song_list_state:
@@ -694,7 +734,10 @@ class PlayerPage:
     def update_meter(self):
         # this tab's speaker playback shows what the coil would do, otherwise show what the coil does
         speaker = self.speaker
-        if speaker is not None:
+        if speaker is not None and speaker.paused_at is not None:
+            reading = MeterReading((), 0)
+            source = "speaker"
+        elif speaker is not None:
             enabled = set(speaker.parts) if speaker.parts is not None else self.enabled_parts(speaker.song)
             reading = self.simulate_coil(speaker.song, enabled, speaker.position)
             source = "speaker"
@@ -750,9 +793,13 @@ class PlayerPage:
         self.log.clear()
         self.push_log_lines(self.player.log_since(0))
 
-    def show_progress(self, song: Song, position: float):
-        self.set_roll_position(position / song.length if song.length else 0.0)
-        self.time_label.set_text(f"{format_time(position)} / {format_time(song.length)}")
+    def show_progress(self, song: Song | None, position: float):
+        fraction = position / song.length if song and song.length else 0.0
+        self.set_roll_position(fraction)
+        self.position_label.set_text(format_time(position) if song else "")
+        self.length_label.set_text(format_time(song.length) if song else "")
+        if not self.slider_pressed:
+            self.position_slider.set_value(round(fraction * SLIDER_STEPS))
 
     def enabled_parts(self, song: Song) -> set[PartKey]:
         return {part for part in song.parts if not self.player.is_muted(song, part)}
@@ -839,6 +886,16 @@ class PlayerPage:
         self.selected = song
         self.update()
 
+    def active_playback(self) -> tuple[Song | None, float, bool]:
+        """The song playing or paused (on this tab's speaker, otherwise on the coil), its position and if it plays."""
+        speaker = self.speaker
+        if speaker is not None:
+            return speaker.song, speaker.position, speaker.paused_at is None
+        state = self.player.state
+        if state in [PlayerState.PLAYING, PlayerState.PAUSED] and self.player.current_song is not None:
+            return self.player.current_song, self.player.position, state == PlayerState.PLAYING
+        return None, 0.0, False
+
     def play(self, start: float = 0.0):
         if self.selected is None:
             return
@@ -846,12 +903,36 @@ class PlayerPage:
             self.play_on_speaker(self.selected, None, "", start)
         else:
             self.stop_speaker()
-            self.release_all_keys()
-            try:
-                self.player.play(self.selected, start)
-            except Exception as e:
-                ui.notify(f"Could not play: {e}", type="negative")
+            self.play_on_coil(self.selected, start)
         self.update()
+
+    def play_on_coil(self, song: Song, start: float):
+        self.release_all_keys()
+        try:
+            self.player.play(song, start)
+        except Exception as e:
+            ui.notify(f"Could not play: {e}", type="negative")
+
+    def toggle_play(self):
+        active, position, playing = self.active_playback()
+        if self.selected is not None and (active is None or self.selected.path != active.path):
+            self.play()
+        elif self.speaker is not None:
+            speaker = self.speaker
+            if playing:
+                ui.run_javascript("teslaSynth.stopSequence()")
+                speaker.paused_at = speaker.position
+            else:
+                self.play_on_speaker(speaker.song, speaker.parts, speaker.label, position)
+        elif active is not None:
+            if playing:
+                self.player.pause()
+            else:
+                self.play_on_coil(active, position)
+        self.update()
+
+    def restart(self):
+        self.seek_to(0.0)
 
     def stop(self):
         # stop what's shown: the speaker playback of this tab, otherwise the coil
@@ -862,19 +943,33 @@ class PlayerPage:
         self.update()
 
     def seek(self, e: events.GenericEventArguments):
-        # seek within the shown song, otherwise start the selected song from the clicked position
-        fraction = min(max(float(e.args), 0.0), 1.0)
-        if self.speaker is not None:
-            speaker = self.speaker
+        self.seek_to(float(e.args))
+
+    def slider_touched(self, pressed: bool):
+        self.slider_pressed = pressed
+        self.slider_touch_time = monotonic()
+
+    def slider_released(self, e: events.GenericEventArguments):
+        if self.slider_pressed or monotonic() - self.slider_touch_time > SLIDER_TOUCH_TIMEOUT:
+            return
+        self.seek_to(float(e.args) / SLIDER_STEPS)
+
+    def seek_to(self, fraction: float):
+        # seek within the playing or paused song (staying paused), otherwise start the selected song from there
+        fraction = min(max(fraction, 0.0), 1.0)
+        active, _, playing = self.active_playback()
+        speaker = self.speaker
+        if active is None:
+            if self.selected is not None and self.play_button.enabled:
+                self.play(fraction * self.selected.length)
+        elif speaker is not None and not playing:
+            speaker.paused_at = fraction * speaker.song.length
+        elif speaker is not None:
             self.play_on_speaker(speaker.song, speaker.parts, speaker.label, fraction * speaker.song.length)
-        elif self.player.state == PlayerState.PLAYING and self.player.current_song is not None:
-            self.release_all_keys()
-            try:
-                self.player.play(self.player.current_song, fraction * self.player.current_song.length)
-            except Exception as error:
-                ui.notify(f"Could not play: {error}", type="negative")
-        elif self.selected is not None and self.play_button.enabled:
-            self.play(fraction * self.selected.length)
+        elif not playing:
+            self.player.seek_paused(fraction * active.length)
+        else:
+            self.play_on_coil(active, fraction * active.length)
         self.update()
 
     async def upload(self, e: events.UploadEventArguments):
@@ -940,7 +1035,13 @@ class PlayerPage:
         self.octave_label.set_text(note_name(self.base_note))
 
     def on_key(self, e: events.KeyEventArguments):
-        if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta or e.key.code not in KEY_OFFSETS:
+        if e.modifiers.ctrl or e.modifiers.alt or e.modifiers.meta:
+            return
+        if e.key.code == "Space":
+            if e.action.keydown and not e.action.repeat and self.play_button.enabled:
+                self.toggle_play()
+            return
+        if e.key.code not in KEY_OFFSETS:
             return
         source = f"key:{e.key.code}"
         # the laptop keys only play on the keyboard page, but always release the notes

@@ -36,8 +36,9 @@ Features:
 
 - connect to the controller (auto-connects to `/dev/ttyACM0` on startup) and reset it, it pings the controller
   while idle and reconnects by itself when the USB connection drops, resuming a playing song
-- browse folders for songs, play / stop / seek them on the coil or on the speaker of the browser, and upload new
-  `.mid` files into the current folder
+- browse folders for songs and upload new `.mid` files into the current folder
+- play, pause, stop and seek the songs on the coil or on the speaker of the browser with the player bar at the bottom
+  of every page (the space bar toggles play / pause)
 - toggle the parts of a song (tracks and the MIDI channels within them), also during playback
 - preview a single part on the speaker of the device the browser runs on
 - play notes live on the coil and/or the speaker with the on-screen piano or the laptop keyboard (like LMMS: the

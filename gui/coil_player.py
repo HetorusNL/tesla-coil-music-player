@@ -104,6 +104,7 @@ class PlayerState(Enum):
     DISCONNECTED = "disconnected"
     IDLE = "idle"
     PLAYING = "playing"
+    PAUSED = "paused"
     RECONNECTING = "reconnecting"
 
 
@@ -133,6 +134,10 @@ class CoilPlayer:
         self.port_name: str | None = None
         self.current_song: Song | None = None
         self.position = 0.0
+        # a paused song resumes from its position, the controller is idle meanwhile
+        self.paused = False
+        self._pausing = False
+        self._play_origin = 0.0
         self.notes_on = 0
         self.notes_off = 0
 
@@ -161,6 +166,8 @@ class CoilPlayer:
             return PlayerState.RECONNECTING
         if self._sh is None:
             return PlayerState.DISCONNECTED
+        if self.paused:
+            return PlayerState.PAUSED
         return PlayerState.IDLE
 
     @property
@@ -293,6 +300,25 @@ class CoilPlayer:
         self._thread.start()
 
     def stop(self):
+        self.paused = False
+        self._stop_thread()
+
+    def pause(self):
+        if self.state != PlayerState.PLAYING or self.current_song is None:
+            return
+        self._pausing = True
+        self._stop_thread()
+        self._pausing = False
+        # resume from where the song was, also during a silence between the notes
+        self.position = min(perf_counter() - self._play_origin, self.current_song.length)
+        self.paused = True
+
+    def seek_paused(self, position: float):
+        """Moves the position a paused song resumes from."""
+        if self.paused and self.current_song is not None:
+            self.position = min(max(position, 0.0), self.current_song.length)
+
+    def _stop_thread(self):
         if self._thread is None:
             return
         self._stop_event.set()
@@ -300,7 +326,7 @@ class CoilPlayer:
         self._thread = None
 
     def live_note_on(self, note: int, velocity: int = 100):
-        if self.state != PlayerState.IDLE or note in self._live_notes:
+        if self.state not in [PlayerState.IDLE, PlayerState.PAUSED] or note in self._live_notes:
             return
         self._live_notes.add(note)
         try:
@@ -456,7 +482,7 @@ class CoilPlayer:
         missed = 0
         while True:
             sleep(PING_INTERVAL)
-            if self.state != PlayerState.IDLE:
+            if self.state not in [PlayerState.IDLE, PlayerState.PAUSED]:
                 missed = 0
                 continue
             try:
@@ -563,8 +589,8 @@ class CoilPlayer:
                 self.log(f'resuming "{song.name}" from {start:.1f}s')
 
         # log some statistics
-        song_end = "stopped" if terminated else "finished"
-        self.log(f'{song_end} playing "{song.name}" (notes_on: {self.notes_on}, notes_off: {self.notes_off})')
+        song_end = "paused" if self._pausing else "stopped playing" if terminated else "finished playing"
+        self.log(f'{song_end} "{song.name}" (notes_on: {self.notes_on}, notes_off: {self.notes_off})')
 
     def _play_song_from(self, song: Song, start: float) -> bool:
         # enter midi mode
@@ -604,6 +630,7 @@ class CoilPlayer:
     def _play_sounding_note_events(self, song: Song, start: float, sounding: set[tuple[int, int]]) -> bool:
         # schedule the events against the start time, so the serial overhead doesn't accumulate
         start_time = perf_counter() - start
+        self._play_origin = start_time
         previous_time = start
         for event in song.events:
             # when starting halfway, the notes before the start (and ones still held at the start) are skipped
