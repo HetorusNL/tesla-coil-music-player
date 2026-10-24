@@ -6,6 +6,8 @@
 
 #include "spark_test.h"
 
+#include "protocol.h"
+#include "sequencer.h"
 #include "spark_generator.h"
 
 SparkTest::Spark SparkTest::sparks[MAX_ENTRIES];
@@ -32,19 +34,46 @@ void SparkTest::begin() {
     TIM2->CCER = TIM_CCER_CC3E | TIM_CCER_CC4E | TIM_CCER_CC4P;
 }
 
-PHC::PACKET_HANDLE_RESULT SparkTest::handle(uint8_t* data, uint8_t len) {
-    using PHR = PHC::PACKET_HANDLE_RESULT;
-    if (len != 1)
-        return PHR::RESULT_NOK;
-    switch (data[0]) {
+uint8_t SparkTest::handle(const uint8_t* body, uint8_t len, uint8_t* reply, uint8_t& reply_len) {
+    if (len < 1)
+        return Protocol::BAD_LENGTH;
+    switch (body[0]) {
     case START:
         start();
-        return PHR::RESULT_OK;
-    case DUMP:
-        dump();
-        return PHR::RESULT_OK;
+        return Protocol::OK;
+    case STOP:
+        {
+            __disable_irq();
+            logging = false;
+            TIM2->DIER &= ~TIM_DIER_CC4IE;
+            uint32_t values[] = {SparkGenerator::clock_hz(),
+                                 Sequencer::tick_at_zero(),
+                                 SparkGenerator::now(),
+                                 num_sparks,
+                                 num_pulses,
+                                 missed_pulses,
+                                 dropped};
+            __enable_irq();
+            memcpy(reply, values, sizeof(values));
+            reply_len = sizeof(values);
+            return Protocol::OK;
+        }
+    case READ:
+        {
+            if (len != 4)
+                return Protocol::BAD_LENGTH;
+            uint16_t first = body[2] | body[3] << 8;
+            uint32_t total = body[1] == 0 ? num_sparks : num_pulses;
+            const uint8_t* entries = body[1] == 0 ? (const uint8_t*)sparks : (const uint8_t*)pulses;
+            if (first > total)
+                return Protocol::OUT_OF_RANGE;
+            uint32_t count = min(total - first, (uint32_t)READ_ENTRIES);
+            memcpy(reply, entries + first * 8, count * 8);
+            reply_len = count * 8;
+            return Protocol::OK;
+        }
     default:
-        return PHR::RESULT_NOK;
+        return Protocol::OUT_OF_RANGE;
     }
 }
 
@@ -63,36 +92,14 @@ void SparkTest::start() {
     __enable_irq();
 }
 
-void SparkTest::dump() {
-    __disable_irq();
-    logging = false;
-    TIM2->DIER &= ~TIM_DIER_CC4IE;
-    uint32_t now = SparkGenerator::now();
-    __enable_irq();
-
-    // header: magic, clock (Hz), tick of the dump, number of sparks, number of pulses, missed pulses, dropped entries
-    uint32_t header[] = {
-        0x4B525053,  // "SPRK"
-        SparkGenerator::clock_hz(),
-        now,
-        num_sparks,
-        num_pulses,
-        missed_pulses,
-        dropped,
-    };
-    Serial.write((uint8_t*)header, sizeof(header));
-    Serial.write((uint8_t*)sparks, num_sparks * sizeof(Spark));
-    Serial.write((uint8_t*)pulses, num_pulses * sizeof(Pulse));
-}
-
-void SparkTest::log_spark(uint32_t tick, uint8_t timer_id, uint32_t on_ticks) {
+void SparkTest::log_spark(uint32_t tick, uint8_t voice, uint32_t on_ticks) {
     if (!logging)
         return;
     if (num_sparks >= MAX_ENTRIES) {
         dropped++;
         return;
     }
-    sparks[num_sparks++] = {tick, (uint16_t)on_ticks, timer_id, 0};
+    sparks[num_sparks++] = {tick, (uint16_t)on_ticks, voice, 0};
 }
 
 void SparkTest::capture_isr() {

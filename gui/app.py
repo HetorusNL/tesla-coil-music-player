@@ -22,7 +22,7 @@ from serial.tools import list_ports
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
-from gui.coil_model import COIL_TIMERS, MeterReading, note_frequency, spark_on_time
+from gui.coil_model import COIL_VOICES, MeterReading, note_frequency, spark_on_time
 from gui.coil_player import CoilPlayer, Delivery, LogLine, PlayerState
 from gui.config import (
     ABSOLUTE_MAX_DUTY,
@@ -242,14 +242,15 @@ class PlayerPage:
     def build_meter(self):
         with ui.row().classes("items-center gap-2 no-wrap max-sm:hidden") as meter:
             meter.tooltip(
-                f"Notes on the {COIL_TIMERS} coil timers (red: all timers in use, extra notes are dropped) and the "
-                "estimated power as duty cycle of the coil, full scale is the max duty cycle of the coil settings. "
+                f"Notes on the {COIL_VOICES} voices of the coil (red: all voices in use, extra notes are dropped) "
+                "and the estimated power as duty cycle of the coil, full scale is the max duty cycle of the coil "
+                "settings. "
                 "A red outline means the notes want more and the sparks are shortened to stay within it"
             )
             self.meter_source = ui.label().classes("text-caption opacity-70 w-12 text-right")
             with ui.element("div").classes("meter-leds"):
-                self.meter_leds = [ui.element("div").classes("meter-led") for _ in range(COIL_TIMERS)]
-            self.meter_timers_label = ui.label().classes("text-caption w-14")
+                self.meter_leds = [ui.element("div").classes("meter-led") for _ in range(COIL_VOICES)]
+            self.meter_voices_label = ui.label().classes("text-caption w-14")
             with ui.element("div").classes("meter-power") as self.meter_power:
                 self.meter_fill = ui.element("div").classes("meter-fill")
                 self.meter_peak = ui.element("div").classes("meter-peak")
@@ -479,7 +480,7 @@ class PlayerPage:
                 ui.element("div").classes("roll-played")
             self.roll.tooltip(
                 "Click to play from here. The bottom strip shows the coil load: green up to 4, yellow up to 7, "
-                f"orange up to {COIL_TIMERS} and red above {COIL_TIMERS} notes at once (the coil drops those notes)"
+                f"orange up to {COIL_VOICES} and red above {COIL_VOICES} notes at once (the coil drops those notes)"
             )
             self.roll.on(
                 "click",
@@ -795,12 +796,12 @@ class PlayerPage:
             return
         self.meter_state = state
         self.meter_source.set_text(source)
-        # the lit leds turn yellow when the timers get busy and red when they're all in use
-        level = "full" if len(reading.notes) >= COIL_TIMERS else "busy" if len(reading.notes) >= COIL_TIMERS - 2 else ""
+        # the lit leds turn yellow when the voices get busy and red when they're all in use
+        level = "full" if len(reading.notes) >= COIL_VOICES else "busy" if len(reading.notes) >= COIL_VOICES - 2 else ""
         for idx, led in enumerate(self.meter_leds):
             led.classes(replace=f"meter-led {'on' if idx < len(reading.notes) else ''} {level}")
         dropped = f" +{reading.dropped}" if reading.dropped else ""
-        self.meter_timers_label.set_text(f"{len(reading.notes)}/{COIL_TIMERS}{dropped}")
+        self.meter_voices_label.set_text(f"{len(reading.notes)}/{COIL_VOICES}{dropped}")
         fill = min(duty / full_scale, 1.0) if full_scale else 0.0
         peak = min(self.meter_peak_value / full_scale, 1.0) if full_scale else 0.0
         self.meter_fill.style(f"width: {fill * 100:.1f}%")
@@ -826,7 +827,7 @@ class PlayerPage:
             if span.part in enabled and position < span.end and key not in keys:
                 keys.add(key)
                 notes.append((span.note, span.velocity))
-        return MeterReading(tuple(notes[:COIL_TIMERS]), max(len(notes) - COIL_TIMERS, 0))
+        return MeterReading(tuple(notes[:COIL_VOICES]), max(len(notes) - COIL_VOICES, 0))
 
     def push_log_lines(self, lines: list[LogLine]):
         if lines:
@@ -883,11 +884,11 @@ class PlayerPage:
             load = song.load(enabled, LOAD_BINS)
             enabled_idx = [song.part_order.index(part) for part in enabled]
             self.client.run_javascript(
-                f"teslaRoll.setEnabled({self.roll.id}, {json.dumps(enabled_idx)}, {json.dumps(load)}, {COIL_TIMERS})"
+                f"teslaRoll.setEnabled({self.roll.id}, {json.dumps(enabled_idx)}, {json.dumps(load)}, {COIL_VOICES})"
             )
             peak = max(load, default=0)
-            self.load_label.set_text(f"peak {peak}/{COIL_TIMERS} notes at once")
-            if peak > COIL_TIMERS:
+            self.load_label.set_text(f"peak {peak}/{COIL_VOICES} notes at once")
+            if peak > COIL_VOICES:
                 self.load_label.classes(add="text-negative")
             else:
                 self.load_label.classes(remove="text-negative")

@@ -4,14 +4,14 @@
 
 #include <Arduino.h>
 
-#include "midi_controller.h"
-#include "packet_handler.h"
-#include "timer_manager.h"
-#include "utils.h"
-
-PacketHandler* packet_handler = nullptr;
+#include "protocol.h"
+#include "sequencer.h"
+#include "spark_generator.h"
 
 void setup() {
+    // the code runs from the flash on the AXI bus, which the ART accelerator doesn't speed up, the instruction cache
+    // does (the core leaves it off)
+    SCB_EnableICache();
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);  // same as LED_BUILTIN
@@ -26,11 +26,19 @@ void setup() {
     digitalWrite(LED_GREEN, LOW);
     delay(100);
     digitalWrite(LED_BLUE, LOW);
-    // ensure the I/O is setup before initializing the packet handler
-    packet_handler = new PacketHandler();
+
+    SparkGenerator::begin();
+    Sequencer::begin();
+    Protocol::begin();
 }
 
 void loop() {
-    // let the packet handler handle all communication
-    packet_handler->update();
+    Protocol::update();
+    Sequencer::update();
+    // the green LED shows whether any voice is sparking
+    static bool sparking = false;
+    if ((SparkGenerator::active_voices() != 0) != sparking) {
+        sparking = !sparking;
+        digitalWrite(LED_BUILTIN, sparking);
+    }
 }

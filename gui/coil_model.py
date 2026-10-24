@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 from gui.config import ABSOLUTE_MAX_ON_TIME, SparkConfig
 
-# the number of notes the controller plays at once (TimerManager::NUM_TIMERS of the firmware)
-COIL_TIMERS = 9
+# the number of notes the controller plays at once (SparkGenerator::NUM_VOICES of the firmware)
+COIL_VOICES = 16
 
 
 def note_frequency(note: int) -> float:
@@ -19,7 +19,8 @@ def note_frequency(note: int) -> float:
 
 
 def spark_on_time(frequency: float, velocity: int, config: SparkConfig) -> float:
-    """Mirrors CoilTimer::get_on_time and CoilTimer::update_on_ticks: the on-time (us) of a single spark."""
+    """The on-time (us) of the sparks of a note: the on-time table times the volume and the velocity factor, within the
+    min and max on-time."""
     on_times = config.on_times
     freq = int(frequency)
     index = freq // 100
@@ -42,8 +43,9 @@ def duty_cycle(notes: Iterable[tuple[int, int]], config: SparkConfig) -> float:
 
 
 def limited_duty_cycle(notes: Iterable[tuple[int, int]], config: SparkConfig) -> float:
-    """Mirrors the SparkGenerator: the fraction of time the coil is on within the maximum duty cycle. Beyond it all
-    sparks get shorter by the same factor, but not below the min on-time, and the budget of on-time limits the rest.
+    """Mirrors the SparkGenerator of the firmware: the fraction of time the coil is on within the max duty cycle.
+    Beyond it all sparks get shorter by the same factor, but not below the min on-time, and the budget of on-time
+    limits the rest.
     """
     sparks = [(note_frequency(note), spark_on_time(note_frequency(note), velocity, config)) for note, velocity in notes]
     demand = sum(frequency * on_time for frequency, on_time in sparks) / 1e6
@@ -67,35 +69,19 @@ class MeterReading:
 
 
 class CoilModel:
-    """Mirrors the notes the controller plays, it drops the notes that don't get one of its timers."""
+    """What the coil plays, for the meter: the player keeps it up to date while a song or live notes play."""
 
     def __init__(self):
         self._lock = threading.Lock()
-        # (channel, note) of the notes on the timers with their velocity, and of the notes that were dropped
-        self._playing: dict[tuple[int, int], int] = {}
-        self._dropped: set[tuple[int, int]] = set()
+        self._reading = MeterReading((), 0)
 
-    def handle_midi(self, midi_bytes: list[int]):
-        status, note, velocity = midi_bytes[0] & 0xF0, midi_bytes[1], midi_bytes[2]
-        key = (midi_bytes[0] & 0x0F, note)
+    def set_reading(self, reading: MeterReading):
         with self._lock:
-            if status == 0x90 and velocity > 0:
-                if key in self._playing or key in self._dropped:
-                    return
-                if len(self._playing) < COIL_TIMERS:
-                    self._playing[key] = velocity
-                else:
-                    self._dropped.add(key)
-            elif status in [0x80, 0x90]:
-                self._playing.pop(key, None)
-                self._dropped.discard(key)
+            self._reading = reading
 
     def clear(self):
-        with self._lock:
-            self._playing.clear()
-            self._dropped.clear()
+        self.set_reading(MeterReading((), 0))
 
     def reading(self) -> MeterReading:
         with self._lock:
-            notes = tuple((note, velocity) for (_, note), velocity in self._playing.items())
-            return MeterReading(notes, len(self._dropped))
+            return self._reading

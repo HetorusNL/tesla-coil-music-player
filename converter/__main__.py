@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
 TICKS_PER_BEAT = 480
 TEMPO_BPM = 120
-# the tesla coil controller has 9 timers, so it can't play more notes at once
-COIL_MAX_NOTES = 9
+# the tesla coil controller has 16 voices, so it can't play more notes at once
+COIL_MAX_NOTES = 16
 # MIDI channel 10 (index 9) is reserved for percussion, keep it free so the pitched parts don't play as drums
 DRUM_CHANNEL = 9
 DRUM_STEM = "drums"

@@ -3,6 +3,11 @@
 Plays MIDI songs on a tesla coil. The `controller/` folder contains the PlatformIO firmware of the tesla coil
 controller, the `gui/` folder contains a NiceGUI web interface that sends the songs to the controller over serial.
 
+The controller (a Nucleo-F746ZG) plays up to 16 voices on the coil pin D10. The sparks are made in hardware by its
+timers, exact to 9.26 ns, and kept within a maximum duty cycle. The web interface turns the notes into voices and
+streams them half a second ahead with timestamps, so the controller plays them on its own clock. See
+[controller/PROTOCOL.md](controller/PROTOCOL.md) for the serial protocol.
+
 ## Converting audio to MIDI
 
 ```sh
@@ -35,7 +40,8 @@ port, web port and songs folder options. The song browser starts in `./songs` of
 Features:
 
 - connect to the controller (auto-connects to `/dev/ttyACM0` on startup) and reset it, it pings the controller
-  while idle and reconnects by itself when the USB connection drops, resuming a playing song
+  and reconnects by itself when the USB connection drops, resuming a playing song. The controller silences the coil
+  when the web interface stops sending for a second
 - browse folders for songs and upload new `.mid` files into the current folder
 - play, pause, stop and seek the songs on the coil or on the speaker of the browser with the player bar at the bottom
   of every page (the space bar toggles play / pause)
@@ -44,5 +50,30 @@ Features:
 - play notes live on the coil and/or the speaker with the on-screen piano or the laptop keyboard (like LMMS: the
   `Z`/`S` rows play the lower octave, the `Q`/number rows the upper octave) on the keyboard page
 - set the spark on-times on the settings page: the on-time per frequency band (also by dragging the points of the
-  chart), the volume, the min and max on-time and the velocity sensitivity. They're saved to `./coil-config.json`
-  (see `--config`) and sent to the controller after connecting, which needs the firmware of this version
+  chart), the volume, the min and max on-time, the velocity sensitivity and the max duty cycle. They're saved to
+  `./coil-config.json` (see `--config`) and apply right away, also to a playing song. The controller needs the
+  firmware of this version
+
+## Firmware
+
+```sh
+pio run -t upload
+```
+
+Builds and flashes the firmware of the controller (`~/.platformio/penv/bin/pio` when `pio` isn't on the `PATH`).
+
+## Tests
+
+```sh
+uv run pytest
+```
+
+Runs the tests of the protocol, the framing (against the C++ code of the firmware) and the planning of the voices.
+The hardware tests run on the controller itself, with the test firmware, which logs the sparks and measures the pulses
+on the coil pin. Wire D10 to A0 and disconnect the coil (a speaker with a series resistor may stay on D10), then:
+
+```sh
+pio run -e nucleo_spark_test -t upload
+uv run pytest --port=/dev/ttyACM0
+pio run -t upload
+```
