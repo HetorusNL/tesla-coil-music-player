@@ -111,3 +111,17 @@ def test_silence_in_a_song_keeps_the_connection(player: CoilPlayer, controller: 
     wait_until_done(player)
     assert_in_time(controller)
     assert [a.time for a in controller.applied if a.kind == Kind.VOICE_ON] == [0, 2_000_000]
+
+
+def test_pitch_bend(player: CoilPlayer, controller: SimulatedController, tmp_path: Path):
+    # A4 for 2 beats, bent up a whole tone in steps over the first beat
+    sweep = [(0, step / 20, round(8191 * step / 20)) for step in range(21)]
+    song = write_song(tmp_path / "bend.mid", [(0, 69, 0, 2)], bends=sweep)
+    player.play(song)
+    wait_until_done(player)
+    assert_in_time(controller)
+    sets = [a for a in controller.applied if a.kind == Kind.VOICE_SET and a.voice == 0 and a.time > 0]
+    # the voice follows the bends without restarting
+    assert len(sets) == 20
+    assert not [a for a in controller.applied if a.kind == Kind.VOICE_ON and a.time > 0]
+    assert sets[-1].frequency == round(440 * 2 ** (8191 / 8192 * 2 / 12) * 1000)

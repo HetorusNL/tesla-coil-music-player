@@ -46,6 +46,7 @@ Features:
 - play, pause, stop and seek the songs on the coil or on the speaker of the browser with the player bar at the bottom
   of every page (the space bar toggles play / pause)
 - toggle the parts of a song (tracks and the MIDI channels within them), also during playback
+- play the pitch bends of a song (also its bend range, RPN 0), on the coil and in the speaker preview
 - preview a single part on the speaker of the device the browser runs on
 - play notes live on the coil and/or the speaker with the on-screen piano or the laptop keyboard (like LMMS: the
   `Z`/`S` rows play the lower octave, the `Q`/number rows the upper octave) on the keyboard page

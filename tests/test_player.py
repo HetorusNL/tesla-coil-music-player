@@ -6,6 +6,7 @@
 """Tests of the player of the GUI on the controller running the test firmware, skipped without --port."""
 
 from collections.abc import Iterator
+from statistics import mean
 from pathlib import Path
 from time import monotonic, sleep
 
@@ -123,3 +124,23 @@ def test_live_notes(player: CoilPlayer, spark_log: LoggingController):
     log = spark_log.read_log()
     assert_pulses(log)
     assert sorted(voices_by_frequency(log)) == [440, 523]
+
+
+def test_pitch_bend(player: CoilPlayer, spark_log: LoggingController, tmp_path: Path):
+    # A4 for 4 beats (2 s), bent up a whole tone over the first 2 beats in steps of 10 ms
+    sweep = [(0, step / 50, round(8191 * step / 100)) for step in range(101)]
+    song = write_song(tmp_path / "bend.mid", [(0, 69, 0, 4)], bends=sweep)
+    spark_log.start_log()
+    player.play(song)
+    wait_until_done(player)
+    log = spark_log.read_log()
+    assert_pulses(log)
+    voices = voices_by_frequency(log)
+    assert len(voices) == 1
+    ticks = next(iter(voices.values()))
+    intervals = [log.us(ticks_diff(b, a)) for a, b in zip(ticks, ticks[1:])]
+    # from 440 Hz up to 494 Hz (a whole tone), gliding: no gap and no jump on the way
+    assert 1e6 / mean(intervals[:20]) == pytest.approx(440, abs=3)
+    assert 1e6 / mean(intervals[-100:]) == pytest.approx(440 * 2 ** (2 / 12), abs=3)
+    assert max(intervals) < 1e6 / 440 * 1.02
+    assert all(b < a * 1.01 for a, b in zip(intervals, intervals[1:]))

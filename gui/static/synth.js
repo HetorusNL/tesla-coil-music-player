@@ -51,8 +51,10 @@ window.teslaSynth = (() => {
   function scheduleSequence() {
     const horizon = ctx.currentTime + LOOKAHEAD;
     while (sequenceIndex < sequence.length && sequenceStart + sequence[sequenceIndex][0] < horizon) {
-      const [start, duration, note, velocity] = sequence[sequenceIndex++];
+      const [start, duration, note, velocity, bends] = sequence[sequenceIndex++];
       const voice = startVoice(note, velocity, sequenceStart + start);
+      // the pitch bends of the note: [time since its start, cents]
+      for (const [time, cents] of bends || []) voice.osc.detune.setValueAtTime(cents, sequenceStart + start + time);
       voice.end = sequenceStart + start + Math.max(duration, 0.02);
       stopVoice(voice, voice.end);
       sequenceVoices.push(voice);
@@ -80,7 +82,7 @@ window.teslaSynth = (() => {
     releaseAll() {
       for (const note of [...liveVoices.keys()]) this.noteOff(note);
     },
-    // plays [start, duration, note, velocity] notes (sorted by start), from the offset in seconds
+    // plays [start, duration, note, velocity, bends] notes (sorted by start), from the offset in seconds
     playSequence(notes, offset = 0) {
       this.stopSequence();
       audio();
