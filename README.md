@@ -69,12 +69,15 @@ Builds and flashes the firmware of the controller (`~/.platformio/penv/bin/pio` 
 uv run pytest
 ```
 
-Runs the tests of the protocol, the framing (against the C++ code of the firmware) and the planning of the voices.
+Runs the tests that need no hardware: the protocol, the framing (against the C++ code of the firmware), the planning
+of the voices, and the player against a simulated controller.
+
 The hardware tests run on the controller itself, with the test firmware, which logs the sparks and measures the pulses
 on the coil pin. Wire D10 to A0 and disconnect the coil (a speaker with a series resistor may stay on D10), then:
 
 ```sh
-pio run -e nucleo_spark_test -t upload
-uv run pytest --port=/dev/ttyACM0
-pio run -t upload
+./test-on-board.sh [port] [pytest arguments]
 ```
+
+It flashes the test firmware, runs all tests (the port defaults to `/dev/ttyACM0`, e.g. `./test-on-board.sh -k bend`
+runs only the tests about pitch bend) and flashes the normal firmware again afterwards, also when a test fails.
