@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import IntEnum
 from time import monotonic
+from typing import Protocol
 
 import serial
 
@@ -120,6 +121,21 @@ class PingStatus:
     rejected_frames: int
 
 
+class Port(Protocol):
+    """What the Link uses of a serial port, so the tests can put a simulated controller behind it."""
+
+    @property
+    def in_waiting(self) -> int: ...
+
+    def write(self, data: bytes, /) -> int | None: ...
+
+    def read(self, size: int, /) -> bytes: ...
+
+    def reset_input_buffer(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
 class ConnectionLost(Exception):
     """The controller stopped answering, or the serial port went away."""
 
@@ -206,7 +222,7 @@ class Link:
     reply without handling it again.
     """
 
-    def __init__(self, port: "str | serial.Serial", on_log: Callable[[int, str], None] | None = None):
+    def __init__(self, port: "str | Port", on_log: Callable[[int, str], None] | None = None):
         # called with the type and a description of every request and reply, for a debug log
         self._on_log = on_log
         # a port that's already open (or a fake one in the tests) is used as it is
@@ -224,6 +240,11 @@ class Link:
         self.serial.reset_input_buffer()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
+
+    @property
+    def next_seq(self) -> int:
+        """The sequence number of the next request."""
+        return self._seq
 
     def close(self):
         self._closing = True
@@ -346,7 +367,7 @@ class Link:
 class Controller:
     """The requests of the protocol."""
 
-    def __init__(self, port: "str | serial.Serial", on_log: Callable[[int, str], None] | None = None):
+    def __init__(self, port: "str | Port", on_log: Callable[[int, str], None] | None = None):
         self.link = Link(port, on_log)
         self.info: Hello | None = None
 

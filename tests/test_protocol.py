@@ -200,7 +200,7 @@ def fake() -> Iterator[FakeController]:
 
 
 def connect(fake: FakeController) -> Link:
-    link = Link(fake)  # pyright: ignore[reportArgumentType]
+    link = Link(fake)
     link.request(Type.HELLO, bytes([2]))
     return link
 
@@ -237,7 +237,7 @@ def test_lost_reply_is_replayed(fake: FakeController):
 
 
 def test_events_are_split_into_frames(fake: FakeController):
-    controller = Controller(fake)  # pyright: ignore[reportArgumentType]
+    controller = Controller(fake)
     controller.link.request(Type.HELLO, bytes([2]))
     events = [voice_on(i, i % 16, 440, 20) for i in range(40)]
     for pending in controller.events(events):
@@ -247,7 +247,7 @@ def test_events_are_split_into_frames(fake: FakeController):
 
 
 def test_silent_controller_is_a_lost_connection():
-    link = Link(FakeController(answer=False))  # pyright: ignore[reportArgumentType]
+    link = Link(FakeController(answer=False))
     start = monotonic()
     with pytest.raises(ConnectionLost):
         link.request(Type.PING)

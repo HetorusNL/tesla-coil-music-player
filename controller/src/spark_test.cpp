@@ -43,7 +43,7 @@ uint8_t SparkTest::handle(const uint8_t* body, uint8_t len, uint8_t* reply, uint
         return Protocol::OK;
     case STOP:
         {
-            __disable_irq();
+            lock_timers();
             logging = false;
             TIM2->DIER &= ~TIM_DIER_CC4IE;
             uint32_t values[] = {SparkGenerator::clock_hz(),
@@ -53,7 +53,7 @@ uint8_t SparkTest::handle(const uint8_t* body, uint8_t len, uint8_t* reply, uint
                                  num_pulses,
                                  missed_pulses,
                                  dropped};
-            __enable_irq();
+            unlock_timers();
             memcpy(reply, values, sizeof(values));
             reply_len = sizeof(values);
             return Protocol::OK;
@@ -78,7 +78,7 @@ uint8_t SparkTest::handle(const uint8_t* body, uint8_t len, uint8_t* reply, uint
 }
 
 void SparkTest::start() {
-    __disable_irq();
+    lock_timers();
     // reading the captures clears their flags, so the first pulse doesn't count as missed
     (void)TIM2->CCR3;
     (void)TIM2->CCR4;
@@ -89,7 +89,7 @@ void SparkTest::start() {
     dropped = 0;
     logging = true;
     TIM2->DIER |= TIM_DIER_CC4IE;
-    __enable_irq();
+    unlock_timers();
 }
 
 void SparkTest::log_spark(uint32_t tick, uint8_t voice, uint32_t on_ticks) {

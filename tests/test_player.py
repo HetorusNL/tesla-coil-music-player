@@ -30,8 +30,8 @@ def player(port: str, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Coil
 
 @pytest.fixture
 def spark_log(player: CoilPlayer) -> LoggingController:
-    assert player._controller is not None
-    return LoggingController.sharing(player._controller)
+    assert player.controller is not None
+    return LoggingController.sharing(player.controller)
 
 
 @pytest.fixture

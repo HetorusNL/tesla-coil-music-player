@@ -15,7 +15,17 @@ from time import sleep
 
 import pytest
 
-from gui.protocol import RequestFailed, Status, StreamState, Type, frame, voice_off, voice_on, voice_set
+from gui.protocol import (
+    PingStatus,
+    RequestFailed,
+    Status,
+    StreamState,
+    Type,
+    frame,
+    voice_off,
+    voice_on,
+    voice_set,
+)
 from tests.sparks import (
     TOLERANCE_TICKS,
     LoggingController,
@@ -135,7 +145,7 @@ def test_broken_frame_is_counted(coil: LoggingController):
 
 def test_recovers_after_a_gap_in_the_sequence(coil: LoggingController):
     # a request after a gap is refused, the next request in sequence works
-    coil.link.write_raw(frame(Type.PING, (coil.link._seq + 1) % 256, b""))
+    coil.link.write_raw(frame(Type.PING, (coil.link.next_seq + 1) % 256, b""))
     sleep(0.05)
     assert coil.ping().state == StreamState.STOPPED
 
@@ -173,3 +183,31 @@ def test_many_events_at_once(coil: LoggingController):
     for voice, frequency in enumerate(CHORD_16):
         assert_on_grid(log, voice, frequency)
     assert max(ticks_diff(s.tick, log.stream_tick(250_000)) for s in log.sparks) < 0
+
+
+def test_dense_events_lose_no_frames(coil: LoggingController):
+    # all 16 voices change every 20 ms for 2 s, 1600 events a second in full frames, which kept the controller busy
+    # long enough to lose received bytes while its timer interrupt disabled all interrupts
+    coil.stream_start(0)
+    coil.ping()
+    # the counters of a ping count since the previous one
+    statuses: list[PingStatus] = []
+    frame = 20_000
+    for start in range(0, 2_000_000, 250_000):
+        events = [
+            voice_set(time, voice, frequency * (1 + 0.01 * (time // frame % 5)), 10)
+            for time in range(start, start + 250_000, frame)
+            for voice, frequency in enumerate(CHORD_16)
+        ]
+        for pending in coil.events(events):
+            coil.link.wait(pending)
+        if start == 0:
+            coil.stream_run()
+        # stay about 250 ms ahead of the clock
+        while coil.link.clock + 250_000 < start:
+            sleep(0.01)
+            statuses.append(coil.ping())
+    sleep(2.3)
+    statuses.append(coil.ping())
+    assert sum(status.rejected_frames for status in statuses) == 0
+    assert sum(status.late_events for status in statuses) == 0

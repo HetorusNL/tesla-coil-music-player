@@ -46,14 +46,13 @@ extern "C" void TIM2_IRQHandler(void) {
 #ifdef SPARK_TEST
     SparkTest::capture_isr();
 #endif
-    // keep the serial interrupt from delaying the arming of the compares
-    __disable_irq();
+    // the serial interrupt has a higher priority and interrupts this one, so it doesn't lose received bytes while the
+    // voices and events are worked out, only arming the compares disables all interrupts for a moment
     // the events first, so a voice that starts now gets its spark armed right away
     if (TIM2->SR & TIM_SR_CC2IF)
         Sequencer::isr();
     if (TIM2->SR & TIM_SR_CC1IF)
         SparkGenerator::isr();
-    __enable_irq();
 }
 
 void SparkGenerator::begin() {
@@ -107,7 +106,7 @@ void SparkGenerator::begin() {
     TIM2->SR = 0;
     TIM2->DIER = TIM_DIER_CC1IE;
     // lower priority than the serial connection, the sparks don't depend on the interrupt latency
-    NVIC_SetPriority(TIM2_IRQn, 5);
+    NVIC_SetPriority(TIM2_IRQn, TIMER_PRIORITY);
     NVIC_EnableIRQ(TIM2_IRQn);
 #ifdef SPARK_TEST
     SparkTest::begin();
@@ -310,11 +309,6 @@ void SparkGenerator::arm_next() {
         limited = true;
     }
     armed_on_ticks = on_ticks;
-    // working it out takes a few us with many voices, so a spark that is due by now moves to the first tick that can
-    // still be armed, a compare in the past would only match after the 32-bit ticks wrapped around (40 s)
-    uint32_t latest = SparkGenerator::now() + min_lead_ticks;
-    if ((int32_t)(armed_tick - latest) < 0)
-        armed_tick = latest;
     // preload the pulse, TIM4 loads it when the compare triggers it
     if (armed_on_ticks) {
         TIM4->CCR3 = 1;
@@ -323,5 +317,13 @@ void SparkGenerator::arm_next() {
         TIM4->CCR3 = 2;
         TIM4->ARR = 1;
     }
+    // working it out takes a few us with many voices, and the serial interrupt can come in between, so a spark that is
+    // due by now moves to the first tick that can still be armed: a compare in the past would only match after the
+    // 32-bit ticks wrapped around (40 s)
+    __disable_irq();
+    uint32_t latest = SparkGenerator::now() + min_lead_ticks;
+    if ((int32_t)(armed_tick - latest) < 0)
+        armed_tick = latest;
     TIM2->CCR1 = armed_tick;
+    __enable_irq();
 }

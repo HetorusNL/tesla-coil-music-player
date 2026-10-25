@@ -23,15 +23,16 @@ BEAT_US = 500_000
 
 def write_song(path: Path, notes: list[tuple[int, int, int, int]]) -> Song:
     """A song of (channel, note, start beat, end beat) notes, in a single track."""
-    messages: list[tuple[int, mido.Message]] = []
+    # (tick, type, channel, note, velocity), the note offs before the note ons at the same tick
+    messages: list[tuple[int, str, int, int, int]] = []
     for channel, note, start, end in notes:
-        messages.append((start * TICKS_PER_BEAT, mido.Message("note_on", channel=channel, note=note, velocity=100)))
-        messages.append((end * TICKS_PER_BEAT, mido.Message("note_off", channel=channel, note=note, velocity=0)))
-    messages.sort(key=lambda message: (message[0], message[1].type == "note_on"))
+        messages.append((start * TICKS_PER_BEAT, "note_on", channel, note, 100))
+        messages.append((end * TICKS_PER_BEAT, "note_off", channel, note, 0))
+    messages.sort(key=lambda message: (message[0], message[1] == "note_on"))
     track = mido.MidiTrack()
     tick = 0
-    for time, message in messages:
-        track.append(message.copy(time=time - tick))
+    for time, type, channel, note, velocity in messages:
+        track.append(mido.Message(type, channel=channel, note=note, velocity=velocity, time=time - tick))
         tick = time
     file = mido.MidiFile(ticks_per_beat=TICKS_PER_BEAT)
     file.tracks.append(track)

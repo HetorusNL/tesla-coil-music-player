@@ -142,6 +142,11 @@ class CoilPlayer:
         return self._reconnecting
 
     @property
+    def controller(self) -> Controller | None:
+        """The connection with the controller, None while not connected."""
+        return self._controller
+
+    @property
     def num_voices(self) -> int:
         info = self._controller.info if self._controller is not None else None
         return info.num_voices if info is not None else COIL_VOICES
@@ -349,7 +354,7 @@ class CoilPlayer:
         """The live notes follow the new settings."""
         with self._live_lock:
             notes = list(self._live_notes.items())
-        events = []
+        events: list[Event] = []
         for note, (voice, velocity) in notes:
             frequency = note_frequency(note)
             events.append(voice_set(0, voice, frequency, spark_on_time(frequency, velocity, self.spark_config)))

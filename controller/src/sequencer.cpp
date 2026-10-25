@@ -35,41 +35,41 @@ void Sequencer::begin() {
 }
 
 void Sequencer::start(uint32_t clock) {
-    __disable_irq();
+    lock_timers();
     SparkGenerator::stop_all_voices();
     head = tail;
     origin_clock = clock;
     _state = READY;
     arm();
     SparkGenerator::reschedule();
-    __enable_irq();
+    unlock_timers();
 }
 
 void Sequencer::run() {
-    __disable_irq();
+    lock_timers();
     origin_tick = SparkGenerator::now() + RUN_DELAY * SparkGenerator::ticks_per_us();
     zero_tick = origin_tick - origin_clock * SparkGenerator::ticks_per_us();
     _state = RUNNING;
     arm();
-    __enable_irq();
+    unlock_timers();
 }
 
 void Sequencer::stop() {
-    __disable_irq();
+    lock_timers();
     SparkGenerator::stop_all_voices();
     origin_clock = clock();
     head = tail;
     _state = STOPPED;
     arm();
     SparkGenerator::reschedule();
-    __enable_irq();
+    unlock_timers();
 }
 
 void Sequencer::flush() {
-    __disable_irq();
+    lock_timers();
     head = tail;
     arm();
-    __enable_irq();
+    unlock_timers();
 }
 
 bool Sequencer::push(const Event* events, uint8_t count) {
@@ -81,29 +81,29 @@ bool Sequencer::push(const Event* events, uint8_t count) {
         queue[end] = events[i];
         end = (end + 1) % QUEUE_SIZE;
     }
-    __disable_irq();
+    lock_timers();
     tail = end;
     arm();
-    __enable_irq();
+    unlock_timers();
     return true;
 }
 
 void Sequencer::apply_now(const Event& event) {
-    __disable_irq();
+    lock_timers();
     apply(event, SparkGenerator::now() + IMMEDIATE_LEAD * SparkGenerator::ticks_per_us());
     SparkGenerator::reschedule();
-    __enable_irq();
+    unlock_timers();
 }
 
 void Sequencer::update() {
     if (_state != RUNNING || (int32_t)(SparkGenerator::now() - origin_tick) < REBASE_TICKS)
         return;
-    __disable_irq();
+    lock_timers();
     // move the origin forward by whole us, so the clock stays the same
     uint32_t elapsed = (SparkGenerator::now() - origin_tick) / SparkGenerator::ticks_per_us();
     origin_clock += elapsed;
     origin_tick += elapsed * SparkGenerator::ticks_per_us();
-    __enable_irq();
+    unlock_timers();
 }
 
 uint32_t Sequencer::clock() {
@@ -119,10 +119,10 @@ uint32_t Sequencer::clock() {
 uint16_t Sequencer::queue_free() { return QUEUE_SIZE - 1 - (uint16_t)((tail - head + QUEUE_SIZE) % QUEUE_SIZE); }
 
 uint16_t Sequencer::take_late_events() {
-    __disable_irq();
+    lock_timers();
     uint16_t late = late_events;
     late_events = 0;
-    __enable_irq();
+    unlock_timers();
     return late;
 }
 
@@ -152,10 +152,12 @@ void Sequencer::arm() {
     TIM2->DIER |= TIM_DIER_CC2IE;
     // a compare that can't be armed in time is triggered by software, the interrupt then handles the event
     uint32_t tick = now + delay;
+    __disable_irq();
     if ((int32_t)(tick - SparkGenerator::now()) < MIN_LEAD * (int32_t)SparkGenerator::ticks_per_us())
         TIM2->EGR = TIM_EGR_CC2G;
     else
         TIM2->CCR2 = tick;
+    __enable_irq();
 }
 
 void Sequencer::isr() {

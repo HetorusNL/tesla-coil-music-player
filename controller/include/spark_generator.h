@@ -6,6 +6,15 @@
 
 #include <Arduino.h>
 
+// the priority of the interrupt of TIM2, the serial interrupt has a higher one (1, a lower number)
+static constexpr uint32_t TIMER_PRIORITY = 5;
+
+// masks the interrupt of TIM2 (and the ones of a lower priority), but not the serial interrupt: the USART holds a
+// single received byte, which is lost when the interrupt waits longer than the next byte takes (10.8 us)
+inline void lock_timers() { __set_BASEPRI(TIMER_PRIORITY << (8 - __NVIC_PRIO_BITS)); }
+
+inline void unlock_timers() { __set_BASEPRI(0); }
+
 // a voice of the coil: sparks at its frequency with its on-time
 struct Voice {
     bool active;
@@ -39,7 +48,8 @@ struct Voice {
 // DUTY_WINDOW of it: a spark gets at most the budget that is left, and is skipped when that's less than the minimum
 // on-time.
 //
-// All functions that change the voices or the limits must be called with the interrupts disabled.
+// All functions that change the voices or the limits must be called with the timers locked (lock_timers()), or from
+// the interrupt of TIM2.
 class SparkGenerator {
 public:
     static constexpr uint8_t NUM_VOICES = 16;

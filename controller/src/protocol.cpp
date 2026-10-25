@@ -148,10 +148,10 @@ Protocol::Status Protocol::handle_request(uint8_t type, const uint8_t* body, uin
         if (len != 0)
             return BAD_LENGTH;
         *out++ = Sequencer::state();
-        __disable_irq();
+        lock_timers();
         out = write_u32(out, SparkGenerator::active_voices());
         *out = SparkGenerator::take_limited();
-        __enable_irq();
+        unlock_timers();
         out++;
         out = write_u16(out, Sequencer::take_late_events());
         out = write_u16(out, rejected_frames);
@@ -168,9 +168,9 @@ Protocol::Status Protocol::handle_request(uint8_t type, const uint8_t* body, uin
             if (max_on_time > SparkGenerator::ABSOLUTE_MAX_ON_TIME || min_on_time > max_on_time ||
                 max_duty > SparkGenerator::ABSOLUTE_MAX_DUTY)
                 return OUT_OF_RANGE;
-            __disable_irq();
+            lock_timers();
             SparkGenerator::set_limits(max_on_time, min_on_time, max_duty);
-            __enable_irq();
+            unlock_timers();
             return OK;
         }
     case EVENTS:
