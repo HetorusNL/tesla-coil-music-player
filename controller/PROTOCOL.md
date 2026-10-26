@@ -1,7 +1,7 @@
-# Controller protocol (version 2)
+# Controller protocol (version 3)
 
-The serial protocol between the GUI (host) and the controller firmware. It replaces version 1, which streamed MIDI
-messages in real time and waited for an ACK after each one. The firmware side is in `controller/src/protocol.cpp`,
+The serial protocol between the GUI (host) and the controller firmware. Version 2 replaced version 1, which streamed
+MIDI messages in real time and waited for an ACK after each one. Version 3 adds `SET_LEDS`. The firmware side is in `controller/src/protocol.cpp`,
 the host side in `gui/protocol.py`.
 
 ## Goals
@@ -93,6 +93,7 @@ The host sends requests, and the controller answers each one with exactly one re
 | 0x07 | STREAM_RUN   | –                                                     | –                           |
 | 0x08 | FLUSH        | –                                                     | –                           |
 | 0x09 | STOP         | –                                                     | –                           |
+| 0x0A | SET_LEDS     | green_led u8                                          | –                           |
 | 0xF0 | TEST         | test command (only in the `nucleo_spark_test` build)  | test data                   |
 
 - **HELLO** is the first request after connecting. It stops the stream and the voices, and its `seq` starts the
@@ -115,6 +116,8 @@ The host sends requests, and the controller answers each one with exactly one re
   changes: a part is muted, a setting changes. It then sends `IMMEDIATE` corrections (e.g. `VOICE_OFF` for the
   muted notes) and refills the queue from the current clock.
 - **STOP** stops all voices, empties the queue and stops the clock.
+- **SET_LEDS** sets what the LEDs show: `green_led` 1 lights the green LED while voices play, 0 keeps it off.
+  Other values reply `OUT_OF_RANGE`. Until the host sets it, the green LED shows the voices.
 - **TEST** commands of the test firmware: 0x01 starts a new spark log, 0x02 stops logging and replies clock_hz u32,
   the tick at stream clock 0 u32, the current tick u32 and the numbers of sparks, pulses, missed pulses and dropped
   entries (u32 each), 0x03 which u8 (0 sparks, 1 pulses), first u16 replies up to 29 entries of 8 bytes.

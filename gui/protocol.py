@@ -4,7 +4,7 @@
 #
 # This file is part of the Tesla Coil Music Player.
 
-"""The serial protocol with the controller, version 2 (see controller/PROTOCOL.md)."""
+"""The serial protocol with the controller, version 3 (see controller/PROTOCOL.md)."""
 
 import struct
 import threading
@@ -16,7 +16,7 @@ from typing import Protocol
 
 import serial
 
-VERSION = 2
+VERSION = 3
 BAUDRATE = 921600
 # requests that may wait for their reply at the same time
 WINDOW = 4
@@ -40,6 +40,7 @@ class Type(IntEnum):
     STREAM_RUN = 0x07
     FLUSH = 0x08
     STOP = 0x09
+    SET_LEDS = 0x0A
     TEST = 0xF0
 
 
@@ -392,6 +393,10 @@ class Controller:
         """The max and min on-time (us) and the max duty cycle (fraction) of the sparks."""
         body = struct.pack("<IIH", round(max_on_time * 1000), round(min_on_time * 1000), round(max_duty * 10000))
         self.link.request(Type.SET_LIMITS, body)
+
+    def set_leds(self, green_led: bool):
+        """Whether the green LED shows that voices play."""
+        self.link.request(Type.SET_LEDS, bytes([green_led]))
 
     def events(self, events: Iterable[Event], immediate: bool = False) -> list[Pending]:
         """Sends the events in frames of up to MAX_EVENTS, without waiting for the replies."""

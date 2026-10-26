@@ -6,6 +6,7 @@
 """Tests of the player of the GUI against the simulated controller, in real time."""
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic, sleep
 
@@ -112,6 +113,17 @@ def test_silence_in_a_song_keeps_the_connection(player: CoilPlayer, controller: 
     assert_in_time(controller)
     assert [a.time for a in controller.applied if a.kind == Kind.VOICE_ON] == [0, 2_000_000]
 
+
+
+def test_green_led_setting(player: CoilPlayer, controller: SimulatedController):
+    assert controller.green_led
+    player.set_spark_config(replace(player.spark_config, green_led=False))
+    assert not controller.green_led
+    # the setting is sent again on a new connection
+    player.disconnect()
+    controller.green_led = True
+    player.connect("simulated")
+    assert not controller.green_led
 
 def test_pitch_bend(player: CoilPlayer, controller: SimulatedController, tmp_path: Path):
     # A4 for 2 beats, bent up a whole tone in steps over the first beat

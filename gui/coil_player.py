@@ -253,7 +253,7 @@ class CoilPlayer:
         if self._controller is None:
             return None
         try:
-            self._send_limits()
+            self._send_settings()
             self._update_live_notes()
             return Delivery.ACKNOWLEDGED
         except RequestFailed as e:
@@ -384,7 +384,7 @@ class CoilPlayer:
         try:
             info = controller.hello()
             self._controller = controller
-            self._send_limits()
+            self._send_settings()
         except (ConnectionLost, RequestFailed, OSError) as e:
             controller.close()
             self._controller = None
@@ -415,9 +415,11 @@ class CoilPlayer:
         if type != Type.PING:
             self.log(text, debug=True)
 
-    def _send_limits(self):
+    def _send_settings(self):
         config = self.spark_config
-        self._require().set_limits(min(config.max_on_time, ABSOLUTE_MAX_ON_TIME), config.min_on_time, config.max_duty)
+        controller = self._require()
+        controller.set_limits(min(config.max_on_time, ABSOLUTE_MAX_ON_TIME), config.min_on_time, config.max_duty)
+        controller.set_leds(config.green_led)
 
     def _reconnect(self, abort: threading.Event | None = None) -> bool:
         """Reconnects until it succeeds (returns True), disconnect() cancels it or the abort event is set."""

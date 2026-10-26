@@ -13,7 +13,7 @@
 // body that depends on the type.
 class Protocol {
 public:
-    static constexpr uint8_t VERSION = 2;
+    static constexpr uint8_t VERSION = 3;
 
     enum Type : uint8_t {
         HELLO = 0x01,
@@ -25,6 +25,7 @@ public:
         STREAM_RUN = 0x07,
         FLUSH = 0x08,
         STOP = 0x09,
+        SET_LEDS = 0x0A,
         TEST = 0xF0,
     };
 
@@ -46,6 +47,8 @@ public:
     static void begin();
     // reads and handles the received frames, and silences the coil when the host went quiet
     static void update();
+    // whether the green LED shows that voices play, as the host set it
+    static inline bool green_led() { return _green_led; }
 
 private:
     static void handle_frame(uint8_t* frame, uint16_t len);
@@ -72,4 +75,5 @@ private:
     static uint32_t last_frame_ms;
     static bool watchdog_tripped;
     static uint16_t rejected_frames;
+    static bool _green_led;
 };

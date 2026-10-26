@@ -281,6 +281,8 @@ class PlayerPage:
                 self.max_on_time_input = self.setting_input("Max on-time (µs)", 0, ABSOLUTE_MAX_ON_TIME, 1)
                 self.max_duty_input = self.setting_input("Max duty cycle (%)", 0, ABSOLUTE_MAX_DUTY * 100, 0.5)
                 ui.button("Defaults", icon="settings_backup_restore", on_click=self.reset_settings).props("outline")
+            self.green_led_switch = ui.switch("Green LED of the controller lights up while notes play")
+            self.green_led_switch.on_value_change(self.setting_changed)
             self.spark_summary = ui.label().classes("text-caption")
             # drawn by spark_chart.js, dragging a point changes the on-time of its band in the table
             self.spark_chart = ui.element("div").classes("spark-chart")
@@ -320,6 +322,7 @@ class PlayerPage:
         self.min_on_time_input.set_value(config.min_on_time)
         self.max_on_time_input.set_value(config.max_on_time)
         self.max_duty_input.set_value(round(config.max_duty * 100, 2))
+        self.green_led_switch.set_value(config.green_led)
         for number, on_time in zip(self.on_time_inputs, config.on_times):
             number.set_value(on_time)
         # the range of the sparks over all MIDI notes at full velocity, the table does nothing while it's one value
@@ -374,6 +377,7 @@ class PlayerPage:
             volume=round(volume / 100, 4),
             velocity_sensitivity=round(velocity_sensitivity / 100, 4),
             max_duty=round(max_duty / 100, 4),
+            green_led=bool(self.green_led_switch.value),
         )
 
     async def reset_settings(self):

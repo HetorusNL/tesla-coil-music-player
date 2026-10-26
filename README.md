@@ -51,9 +51,9 @@ Features:
 - play notes live on the coil and/or the speaker with the on-screen piano or the laptop keyboard (like LMMS: the
   `Z`/`S` rows play the lower octave, the `Q`/number rows the upper octave) on the keyboard page
 - set the spark on-times on the settings page: the on-time per frequency band (also by dragging the points of the
-  chart), the volume, the min and max on-time, the velocity sensitivity and the max duty cycle. They're saved to
-  `./coil-config.json` (see `--config`) and apply right away, also to a playing song. The controller needs the
-  firmware of this version
+  chart), the volume, the min and max on-time, the velocity sensitivity, the max duty cycle and whether the green LED
+  of the controller shows that notes play. They're saved to `./coil-config.json` (see `--config`) and apply right
+  away, also to a playing song. The controller needs the firmware of this version
 
 ## Firmware
 

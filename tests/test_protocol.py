@@ -20,6 +20,7 @@ from gui.protocol import (
     EVENT_SIZE,
     MAX_BODY,
     MAX_EVENTS,
+    VERSION,
     ConnectionLost,
     Controller,
     Kind,
@@ -201,7 +202,7 @@ def fake() -> Iterator[FakeController]:
 
 def connect(fake: FakeController) -> Link:
     link = Link(fake)
-    link.request(Type.HELLO, bytes([2]))
+    link.request(Type.HELLO, bytes([VERSION]))
     return link
 
 
@@ -238,7 +239,7 @@ def test_lost_reply_is_replayed(fake: FakeController):
 
 def test_events_are_split_into_frames(fake: FakeController):
     controller = Controller(fake)
-    controller.link.request(Type.HELLO, bytes([2]))
+    controller.link.request(Type.HELLO, bytes([VERSION]))
     events = [voice_on(i, i % 16, 440, 20) for i in range(40)]
     for pending in controller.events(events):
         controller.link.wait(pending)

@@ -33,6 +33,8 @@ class SparkConfig:
     velocity_sensitivity: float = 0.0
     # the share of the time the coil may be on, averaged over 10 ms: the sparks get shorter beyond it
     max_duty: float = 0.1
+    # whether the green LED of the controller shows that voices play
+    green_led: bool = True
 
     def errors(self) -> list[str]:
         errors: list[str] = []
@@ -48,6 +50,8 @@ class SparkConfig:
             errors.append("the velocity sensitivity must be between 0 and 100%")
         if not 0 <= self.max_duty <= ABSOLUTE_MAX_DUTY:
             errors.append(f"the max duty cycle must be between 0 and {ABSOLUTE_MAX_DUTY:.0%}")
+        if not isinstance(self.green_led, bool):
+            errors.append("the green LED setting must be true or false")
         return errors
 
 

@@ -16,6 +16,7 @@ uint8_t Protocol::rx_buffer[MAX_ENCODED];
 uint16_t Protocol::rx_len = 0;
 bool Protocol::rx_overflow = false;
 bool Protocol::connected = false;
+bool Protocol::_green_led = true;
 uint8_t Protocol::expected_seq = 0;
 uint8_t Protocol::history[HISTORY][MAX_ENCODED + 1];
 uint16_t Protocol::history_len[HISTORY] = {};
@@ -197,6 +198,13 @@ Protocol::Status Protocol::handle_request(uint8_t type, const uint8_t* body, uin
         if (len != 0)
             return BAD_LENGTH;
         Sequencer::stop();
+        return OK;
+    case SET_LEDS:
+        if (len != 1)
+            return BAD_LENGTH;
+        if (body[0] > 1)
+            return OUT_OF_RANGE;
+        _green_led = body[0];
         return OK;
 #ifdef SPARK_TEST
     case TEST:

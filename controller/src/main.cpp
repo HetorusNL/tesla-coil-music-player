@@ -35,10 +35,10 @@ void setup() {
 void loop() {
     Protocol::update();
     Sequencer::update();
-    // the green LED shows whether any voice is sparking
-    static bool sparking = false;
-    if ((SparkGenerator::active_voices() != 0) != sparking) {
-        sparking = !sparking;
-        digitalWrite(LED_BUILTIN, sparking);
+    // the green LED shows whether any voice plays, unless the host turned it off
+    static bool lit = false;
+    if ((Protocol::green_led() && SparkGenerator::active_voices() != 0) != lit) {
+        lit = !lit;
+        digitalWrite(LED_BUILTIN, lit);
     }
 }

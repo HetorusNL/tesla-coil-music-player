@@ -15,7 +15,7 @@ import threading
 from dataclasses import dataclass
 from time import monotonic
 
-from gui.protocol import Kind, Status, StreamState, Type, cobs_decode, crc16, frame
+from gui.protocol import VERSION, Kind, Status, StreamState, Type, cobs_decode, crc16, frame
 
 NUM_VOICES = 16
 QUEUE_SIZE = 4095
@@ -61,6 +61,7 @@ class SimulatedController:
         self.late_events = 0
         self.watchdog_trips = 0
         self.limits = (100_000, 10_000, 1000)
+        self.green_led = True
 
     # --- the serial port ---
 
@@ -168,9 +169,9 @@ class SimulatedController:
         if type == Type.HELLO:
             self._stop()
             info = struct.pack(
-                "<BBHIIHI", 2, NUM_VOICES, QUEUE_SIZE, CLOCK_HZ, ABSOLUTE_MAX_ON_TIME, ABSOLUTE_MAX_DUTY, MIN_OFF_TIME
+                "<BBHIIHI", VERSION, NUM_VOICES, QUEUE_SIZE, CLOCK_HZ, ABSOLUTE_MAX_ON_TIME, ABSOLUTE_MAX_DUTY, MIN_OFF_TIME
             )
-            return (Status.OK if body == bytes([2]) else Status.OUT_OF_RANGE), info
+            return (Status.OK if body == bytes([VERSION]) else Status.OUT_OF_RANGE), info
         if type == Type.PING:
             active = sum(1 << voice for voice in self.voices)
             late, self.late_events = self.late_events, 0
@@ -180,6 +181,13 @@ class SimulatedController:
             if max_on > ABSOLUTE_MAX_ON_TIME or min_on > max_on or duty > ABSOLUTE_MAX_DUTY:
                 return Status.OUT_OF_RANGE, b""
             self.limits = (max_on, min_on, duty)
+            return Status.OK, b""
+        if type == Type.SET_LEDS:
+            if len(body) != 1:
+                return Status.BAD_LENGTH, b""
+            if body[0] > 1:
+                return Status.OUT_OF_RANGE, b""
+            self.green_led = bool(body[0])
             return Status.OK, b""
         if type in [Type.EVENTS, Type.IMMEDIATE]:
             return self._events(type, body), b""
