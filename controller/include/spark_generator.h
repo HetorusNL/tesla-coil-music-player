@@ -38,6 +38,7 @@ struct Voice {
 // TIM2 counts freely (32-bit) and its compare channel 1 marks the start of the next spark. The compare triggers TIM4
 // in hardware, which makes the pulse on its channel 3 (PD14) in one-pulse mode. So the start and the length of a
 // spark are exact to a timer tick, whatever the interrupt latency. The compare interrupt only arms the next spark.
+// Channel 2 makes the same pulse on the blue LED (PB7), so it glows with the duty cycle of the coil.
 //
 // Only one spark is on the coil at a time: a spark that is due while the coil is busy waits until the coil has been
 // off for at least the minimum off-time.

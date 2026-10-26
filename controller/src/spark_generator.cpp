@@ -68,15 +68,19 @@ void SparkGenerator::begin() {
     __HAL_RCC_TIM2_CLK_ENABLE();
     __HAL_RCC_TIM4_CLK_ENABLE();
     __HAL_RCC_GPIOD_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
     // TIM4 makes the pulse: PWM mode 2 is active from CCR3 up to and including ARR, after which one-pulse mode stops
     // the counter at 0. ARR and CCR3 are preloaded, so arming the next spark doesn't change the running pulse.
+    // Channel 2 makes the same pulse on the blue LED (PB7), so it lights up with the coil.
     TIM4->CR1 = TIM_CR1_OPM | TIM_CR1_ARPE;
     TIM4->PSC = 0;
+    TIM4->CCMR1 = TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_0 | TIM_CCMR1_OC2PE;
     TIM4->CCMR2 = TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_0 | TIM_CCMR2_OC3PE;
-    TIM4->CCER = TIM_CCER_CC3E;
+    TIM4->CCER = TIM_CCER_CC2E | TIM_CCER_CC3E;
     // no pulse: CCR3 beyond ARR keeps the output inactive
     TIM4->ARR = 1;
+    TIM4->CCR2 = 2;
     TIM4->CCR3 = 2;
     TIM4->EGR = TIM_EGR_UG;
     // combined reset + trigger mode: the trigger of TIM2 loads the preloaded pulse and starts the counter
@@ -93,6 +97,9 @@ void SparkGenerator::begin() {
     gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     gpio.Alternate = GPIO_AF2_TIM4;
     HAL_GPIO_Init(GPIOD, &gpio);
+    gpio.Pin = GPIO_PIN_7;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &gpio);
 
     // TIM2 is the clock of the sparks: it counts through the full 32 bits, the compare of channel 1 sends a trigger
     // to TIM4 (compare pulse) and raises the interrupt that arms the next spark. Channel 2 is the compare of the
@@ -311,9 +318,11 @@ void SparkGenerator::arm_next() {
     armed_on_ticks = on_ticks;
     // preload the pulse, TIM4 loads it when the compare triggers it
     if (armed_on_ticks) {
+        TIM4->CCR2 = 1;
         TIM4->CCR3 = 1;
         TIM4->ARR = armed_on_ticks;
     } else {
+        TIM4->CCR2 = 2;
         TIM4->CCR3 = 2;
         TIM4->ARR = 1;
     }
