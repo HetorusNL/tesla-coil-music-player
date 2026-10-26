@@ -29,7 +29,7 @@ window.teslaSparkChart = (() => {
     return chart;
   }
 
-  // mirrors CoilTimer::get_on_time and CoilTimer::create_spark of the firmware
+  // mirrors spark_on_time of gui/coil_model.py, the controller makes sparks of any on-time in ns
   function sparkOnTime(points, data, frequency, factor) {
     const index = Math.floor(frequency / BAND);
     let onTime = points[points.length - 1];
@@ -37,7 +37,7 @@ window.teslaSparkChart = (() => {
       onTime = points[index] + ((points[index + 1] - points[index]) * ((frequency % BAND) + 1)) / BAND;
     }
     const maxOnTime = Math.min(data.max, data.absoluteMax);
-    return Math.trunc(Math.min(Math.max(onTime * factor, data.min), maxOnTime));
+    return Math.min(Math.max(onTime * factor, data.min), maxOnTime);
   }
 
   // the top of the on-time axis: room above the max on-time and the points, but not beyond the absolute maximum
